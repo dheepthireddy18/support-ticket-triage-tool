@@ -17,32 +17,48 @@ VALID_TICKET_IDS = [
 ]
 
 
-def test_full_tool_on_sample_file_writes_report(tmp_path):
-    report_path = tmp_path / "reports" / "daily_summary.txt"
-
-    # Run the tool the way a user would: as a separate process.
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "ticket_triage",
-            "--input",
-            str(SAMPLE_FILE),
-            "--output",
-            str(report_path),
-        ],
+def run_tool(*args):
+    """Run the tool the way a user would: as a separate process."""
+    return subprocess.run(
+        [sys.executable, "-m", "ticket_triage", *args],
         capture_output=True,
         text=True,
         cwd=PROJECT_ROOT,
     )
 
-    assert result.returncode == 0, result.stderr
 
-    # The report file was created (including its missing parent folder).
-    assert report_path.is_file()
-    report = report_path.read_text(encoding="utf-8")
-    assert report.strip()
+def test_full_tool_on_sample_file_writes_report():
+    # The tool reads data/<name> and writes reports/<name>.
+    report_path = PROJECT_ROOT / "reports" / "integration_test_report.txt"
+    report_path.unlink(missing_ok=True)
+
+    try:
+        result = run_tool(
+            "--input", SAMPLE_FILE.name, "--output", report_path.name
+        )
+
+        assert result.returncode == 0, result.stderr
+
+        assert report_path.is_file()
+        report = report_path.read_text(encoding="utf-8")
+        assert report.strip()
+    finally:
+        report_path.unlink(missing_ok=True)
 
     # Every valid ticket from the sample file shows up in the report.
     for ticket_id in VALID_TICKET_IDS:
         assert ticket_id in report
+
+
+def test_paths_are_rejected_file_names_only():
+    result = run_tool("--input", "data/sample_tickets.json")
+
+    assert result.returncode != 0
+    assert "file name only" in result.stderr
+
+
+def test_missing_input_file_exits_with_error():
+    result = run_tool("--input", "does_not_exist.json")
+
+    assert result.returncode == 2
+    assert "not found" in result.stderr

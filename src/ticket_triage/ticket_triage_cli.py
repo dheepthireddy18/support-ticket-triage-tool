@@ -38,6 +38,19 @@ def build_report(prioritized: list[tuple[dict, str]]) -> str:
 
 # --- CLI ---------------------------------------------------------------------
 
+DATA_DIR = Path("data")
+REPORTS_DIR = Path("reports")
+
+
+def file_name(value: str) -> str:
+    """argparse type: accept a bare file name, reject anything with a folder."""
+    if not value or Path(value).name != value:
+        raise argparse.ArgumentTypeError(
+            f"'{value}' must be a file name only, not a path"
+        )
+    return value
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ticket-triage",
@@ -46,12 +59,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--input",
         required=True,
-        help="Path to the input tickets file (CSV or JSON).",
+        type=file_name,
+        help=f"Name of the tickets file (CSV or JSON) inside {DATA_DIR}/.",
     )
     parser.add_argument(
         "--output",
-        default="reports/daily_summary.txt",
-        help="Path where the daily report will be saved.",
+        default="daily_summary.txt",
+        type=file_name,
+        help=f"Name of the report file, saved inside {REPORTS_DIR}/.",
     )
     return parser
 
@@ -60,8 +75,8 @@ def main(argv: list[str] | None = None) -> int:
     """Run the full pipeline. Returns a process exit code."""
     args = build_parser().parse_args(argv)
 
-    input_path = Path(args.input)
-    output_path = Path(args.output)
+    input_path = DATA_DIR / args.input
+    output_path = REPORTS_DIR / args.output
 
     if not input_path.is_file():
         print(f"error: input file not found: {input_path}", file=sys.stderr)

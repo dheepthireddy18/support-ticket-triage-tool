@@ -45,16 +45,16 @@ pip install -e ".[dev]"         # installs the tool and pytest
 ## Running the Triage Tool
 
 ```
-python -m ticket_triage --input data/sample_tickets.json
+python -m ticket_triage --input sample_tickets.json
 ```
 
 or 
 
 ```
-ticket-triage --input data/sample_tickets.json --output reports/daily_summary.txt
+ticket-triage --input sample_tickets.json --output daily_summary.txt
 ```
 
-After successfully running this command, the `reports/` folder is created automatically if it does not exist. A sample input file with five valid tickets and three invalid (missing customer, invalid date, duplicate id) is in `data/sample_tickets.json`.
+Give file names only, not paths. The input file is read from the `data/` folder and the report is saved in the `reports/` folder (created automatically if it does not exist). `--output` is optional and defaults to `daily_summary.txt`. A sample input file with five valid tickets and three invalid (missing customer, invalid date, duplicate id) is in `data/sample_tickets.json`.
 
 ## Running the Tests
 
