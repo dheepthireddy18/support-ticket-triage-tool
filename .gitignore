@@ -8,3 +8,7 @@ dist/
 
 # Generated reports
 reports/
+
+# Architecture and local planning
+ARCHITECTURE_DECISIONS.md
+
