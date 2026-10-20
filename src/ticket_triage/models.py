@@ -14,6 +14,16 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+# Canonical workflow statuses
+STATUS_PENDING = "PENDING"
+STATUS_PROCESSING = "PROCESSING"
+STATUS_PROCESSED = "PROCESSED"
+
+# Canonical priority levels
+PRIORITY_HIGH = "HIGH"
+PRIORITY_MEDIUM = "MEDIUM"
+PRIORITY_LOW = "LOW"
+
 
 def compute_content_hash(customer: str, subject: str, body: str) -> str:
     """Compute a deterministic SHA-256 hash of normalized ticket content."""
@@ -141,7 +151,7 @@ class Ticket:
     @classmethod
     def from_db_row(cls, row: sqlite3.Row | Mapping[str, Any]) -> Ticket:
         """Construct a Ticket instance from an SQLite database row."""
-        raw_metadata = row["metadata"]
+        raw_metadata = row["metadata"] if "metadata" in row.keys() else None
         metadata: dict[str, Any] = {}
         if raw_metadata:
             if isinstance(raw_metadata, str):

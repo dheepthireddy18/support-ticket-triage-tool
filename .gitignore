@@ -9,6 +9,11 @@ dist/
 # Generated reports
 reports/
 
+# SQLite database files
+*.db
+*.db-wal
+*.db-shm
+
 # Architecture and local planning
 ARCHITECTURE_DECISIONS.md
 
