@@ -12,6 +12,24 @@ from pathlib import Path
 DEFAULT_DB_PATH = Path("data/tickets.db")
 SCHEMA_FILE = Path(__file__).resolve().parent / "schema.sql"
 
+# Columns added to `tickets` after the first schema version. CREATE TABLE IF NOT
+# EXISTS does not add columns to an existing table, so init_db adds them.
+ADDED_TICKET_COLUMNS = {
+    "priority_score": "REAL",
+    "escalation_count": "INTEGER NOT NULL DEFAULT 0",
+    "last_escalated_at": "TEXT",
+    "resolved_at": "TEXT",
+}
+
+ALL_TABLES = (
+    "ticket_rule_results",
+    "tickets",
+    "rejected_tickets",
+    "rule_settings",
+    "priority_keywords",
+    "app_settings",
+)
+
 
 def get_db_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
     """
@@ -50,9 +68,12 @@ def init_db(
 
     :param db_path: Path to database file. Defaults to data/tickets.db.
     :param schema_path: Path to SQL schema file. Defaults to schema.sql in package.
-    :param reset: If True, drops existing tickets and rejected_tickets tables first.
+    :param reset: If True, drops all existing tables first.
     :return: Active sqlite3.Connection to the initialized database.
     """
+    # Imported here: priority.config imports models, which this module must not depend on at import time.
+    from ticket_triage.priority.config import seed_defaults
+
     conn = get_db_connection(db_path)
     schema_file = Path(schema_path) if schema_path is not None else SCHEMA_FILE
 
@@ -60,16 +81,28 @@ def init_db(
         raise FileNotFoundError(f"Schema file not found at {schema_file}")
 
     if reset:
-        conn.execute("DROP TABLE IF EXISTS tickets;")
-        conn.execute("DROP TABLE IF EXISTS rejected_tickets;")
+        for table in ALL_TABLES:
+            conn.execute(f"DROP TABLE IF EXISTS {table};")
         conn.commit()
 
     with schema_file.open("r", encoding="utf-8") as f:
         schema_sql = f.read()
 
+    _add_missing_ticket_columns(conn)
     conn.executescript(schema_sql)
+    seed_defaults(conn)
     conn.commit()
     return conn
+
+
+def _add_missing_ticket_columns(conn: sqlite3.Connection) -> None:
+    """Bring a `tickets` table created by an older schema up to date."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(tickets);")}
+    if not existing:
+        return  # Table does not exist yet; the schema script creates it in full.
+    for column, definition in ADDED_TICKET_COLUMNS.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE tickets ADD COLUMN {column} {definition};")
 
 
 def main(argv: list[str] | None = None) -> int:

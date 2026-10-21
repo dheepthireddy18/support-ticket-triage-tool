@@ -18,6 +18,7 @@ from typing import Any, Mapping
 STATUS_PENDING = "PENDING"
 STATUS_PROCESSING = "PROCESSING"
 STATUS_PROCESSED = "PROCESSED"
+STATUS_RESOLVED = "RESOLVED"
 
 # Canonical priority levels
 PRIORITY_HIGH = "HIGH"
@@ -42,10 +43,14 @@ class Ticket:
     created_at: str  # Source timestamp from CSV/JSON input (ISO-8601 UTC)
     inserted_at: str = ""  # Timestamp when record was ingested into DB
     content_hash: str = ""
-    status: str = "PENDING"  # PENDING, PROCESSING, PROCESSED
+    status: str = "PENDING"  # PENDING, PROCESSING, PROCESSED, RESOLVED
     priority_level: str | None = None  # HIGH, MEDIUM, LOW
     classified_at: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    priority_score: float | None = None
+    escalation_count: int = 0
+    last_escalated_at: str | None = None
+    resolved_at: str | None = None
 
     def __post_init__(self) -> None:
         if not self.content_hash:
@@ -87,6 +92,10 @@ class Ticket:
             "priority_level": self.priority_level,
             "classified_at": self.classified_at,
             "metadata": dict(self.metadata),
+            "priority_score": self.priority_score,
+            "escalation_count": self.escalation_count,
+            "last_escalated_at": self.last_escalated_at,
+            "resolved_at": self.resolved_at,
         }
 
     @classmethod
@@ -107,6 +116,10 @@ class Ticket:
             "priority_level",
             "classified_at",
             "metadata",
+            "priority_score",
+            "escalation_count",
+            "last_escalated_at",
+            "resolved_at",
         }
         metadata = dict(data.get("metadata", {}))
         for key, value in data.items():
@@ -125,6 +138,10 @@ class Ticket:
             priority_level=data.get("priority_level"),
             classified_at=data.get("classified_at"),
             metadata=metadata,
+            priority_score=data.get("priority_score"),
+            escalation_count=int(data.get("escalation_count") or 0),
+            last_escalated_at=data.get("last_escalated_at"),
+            resolved_at=data.get("resolved_at"),
         )
 
     def to_db_tuple(self) -> tuple[Any, ...]:
@@ -165,6 +182,9 @@ class Ticket:
         content_hash = row["content_hash"] if "content_hash" in row.keys() else ""
         inserted_at = row["inserted_at"] if "inserted_at" in row.keys() else ""
 
+        def optional(column: str) -> Any:
+            return row[column] if column in row.keys() else None
+
         return cls(
             id=str(row["id"]),
             subject=str(row["subject"]),
@@ -181,6 +201,10 @@ class Ticket:
             if "classified_at" in row.keys()
             else None,
             metadata=metadata,
+            priority_score=optional("priority_score"),
+            escalation_count=int(optional("escalation_count") or 0),
+            last_escalated_at=optional("last_escalated_at"),
+            resolved_at=optional("resolved_at"),
         )
 
 

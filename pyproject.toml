@@ -12,6 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+llm = ["anthropic>=1"]  # optional LLM urgency rule
 
 [project.scripts]
 ticket-triage = "ticket_triage.ticket_triage_cli:main"

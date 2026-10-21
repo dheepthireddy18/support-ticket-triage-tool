@@ -27,14 +27,17 @@ def run_tool(*args):
     )
 
 
-def test_full_tool_on_sample_file_writes_report():
+def test_full_tool_on_sample_file_writes_report(tmp_path):
     # The tool reads data/<name> and writes reports/<name>.
     report_path = PROJECT_ROOT / "reports" / "integration_test_report.txt"
     report_path.unlink(missing_ok=True)
 
     try:
+        # --once: skip the background escalation worker, which runs until Ctrl+C.
+        # --db: a throwaway database, so the test never touches data/tickets.db.
         result = run_tool(
-            "--input", SAMPLE_FILE.name, "--output", report_path.name
+            "--input", SAMPLE_FILE.name, "--output", report_path.name,
+            "--once", "--db", str(tmp_path / "tickets.db"),
         )
 
         assert result.returncode == 0, result.stderr
