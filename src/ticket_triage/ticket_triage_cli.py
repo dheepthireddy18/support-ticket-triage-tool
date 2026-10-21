@@ -11,6 +11,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from ticket_triage.db import DEFAULT_DB_PATH, init_db
+
 
 def load_tickets(path: Path) -> list[dict]:
     """Read tickets from a JSON file (stand-in: no validation, no CSV)."""
@@ -57,8 +59,17 @@ def build_parser() -> argparse.ArgumentParser:
         description="Prioritize support tickets and generate a daily report.",
     )
     parser.add_argument(
+        "--init-db",
+        action="store_true",
+        help="Initialize the SQLite database tables and exit.",
+    )
+    parser.add_argument(
+        "--db",
+        default=str(DEFAULT_DB_PATH),
+        help=f"Path to SQLite database file (default: {DEFAULT_DB_PATH}).",
+    )
+    parser.add_argument(
         "--input",
-        required=True,
         type=file_name,
         help=f"Name of the tickets file (CSV or JSON) inside {DATA_DIR}/.",
     )
@@ -73,7 +84,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the full pipeline. Returns a process exit code."""
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.init_db:
+        conn = init_db(db_path=args.db)
+        conn.close()
+        print(f"Database successfully initialized at {args.db}")
+        return 0
+
+    if not args.input:
+        parser.error("the following arguments are required: --input")
+
+    # Automatically ensure SQLite database and schema exist on startup
+    init_db(db_path=args.db)
 
     input_path = DATA_DIR / args.input
     output_path = REPORTS_DIR / args.output
