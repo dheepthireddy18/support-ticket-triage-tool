@@ -77,17 +77,28 @@ The score is the **weighted average** of the rules that gave a score. A score of
 
 ### Changing the rules without editing code
 
-Rule weights, keywords, thresholds and worker intervals are stored in the database. To change them, edit a copy of `data/priority_rules.example.json` and import it:
+All priority settings live in one file, `data/priority_rules.json`, which is tracked in Git, so every rule change shows up in a diff and can be reviewed. To change a rule, edit the file and run the tool again. The file has four sections:
+
+| Section | What it controls |
+|---|---|
+| `thresholds` | The scores for `high` (default 70) and `medium` (default 40) |
+| `rules` | Each rule's `enabled`, `weight` and `params` |
+| `keywords` | The keyword list: each entry has a `keyword`, a `score` and an optional `min_level` floor |
+| `worker` | `check_interval_seconds` (default 60) and `escalate_after_hours` (default 24) |
+
+Anything you leave out keeps its built-in default. A `keywords` list replaces the whole keyword list. If the file is invalid (unknown rule, negative weight, score outside 0–100, a value of the wrong type), the tool stops before doing any work and names the problem.
+
+To try different settings without changing the shared file, put a copy in `data/` and pass its name:
 
 ```
-ticket-triage --import-rules my_rules.json
+ticket-triage --input sample_tickets.json --rules my_rules.json
 ```
 
-Rules and settings you leave out of the file keep their current values. A `keywords` list replaces the whole keyword list. An invalid file (unknown rule, negative weight, score outside 0–100) is rejected and nothing changes.
+If `data/priority_rules.json` is missing, the tool uses the built-in defaults and prints a notice.
 
 ### Escalation worker
 
-Every 60 seconds the worker checks open tickets: tickets that have been prioritized but not resolved. A ticket that has stayed at the same level for 24 hours moves up one level (LOW to MEDIUM, MEDIUM to HIGH), and the reason is saved in `ticket_rule_results`. You can change both intervals for one run:
+Every 60 seconds the worker checks open tickets: tickets that have been prioritized but not resolved. A ticket that has stayed at the same level for 24 hours moves up one level (LOW to MEDIUM, MEDIUM to HIGH), and the reason is saved in `ticket_rule_results`. Both intervals are set in the `worker` section of the rules file. You can override them for one run:
 
 ```
 ticket-triage --input sample_tickets.json --check-interval 30 --escalate-after 12
@@ -104,7 +115,7 @@ This marks the ticket resolved, so it's no longer escalated and drops out of the
 ### Adding a new rule
 
 1. Subclass `PriorityRule` in `src/ticket_triage/priority/`, give it a unique `name`, and implement `evaluate(ticket, ctx)` so it returns `self.result(score, reason)`.
-2. Register it in `RULE_BUILDERS` and `DEFAULT_RULE_SETTINGS` in `priority/config.py`.
+2. Register it in `RULE_BUILDERS` and `DEFAULT_RULE_SETTINGS` in `priority/config.py`, and add an entry for it under `rules` in `data/priority_rules.json`.
 
 The engine, CLI, report and worker need no changes.
 
@@ -124,7 +135,7 @@ AZURE_AI_DEPLOYMENT=<the deployment name>
 
 The rule calls `{endpoint}/anthropic/v1/messages` and uses the deployment name as the model. If no `AZURE_AI_*` settings are present, it uses `ANTHROPIC_API_KEY` with Anthropic's own API instead. Values already set in your shell win over `.env`.
 
-Then set `"llm_urgency": {"enabled": true}` in a rules file and import it. The tool still works without a key. The rule just gives no score, and its reason in `ticket_rule_results` says why (for example `incomplete Azure settings, missing AZURE_AI_ENDPOINT`).
+Then set `"enabled": true` under `llm_urgency` in `data/priority_rules.json`. The tool still works without a key. The rule just gives no score, and its reason in `ticket_rule_results` says why (for example `incomplete Azure settings, missing AZURE_AI_ENDPOINT`).
 
 ## Running the Tests
 

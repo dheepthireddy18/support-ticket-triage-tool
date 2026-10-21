@@ -25,6 +25,11 @@ ALL_TABLES = (
     "ticket_rule_results",
     "tickets",
     "rejected_tickets",
+)
+
+# Settings tables from before rules moved to data/priority_rules.json. Left alone
+# in existing databases (no silent data loss) and only dropped by a reset.
+LEGACY_TABLES = (
     "rule_settings",
     "priority_keywords",
     "app_settings",
@@ -71,8 +76,6 @@ def init_db(
     :param reset: If True, drops all existing tables first.
     :return: Active sqlite3.Connection to the initialized database.
     """
-    # Imported here: priority.config imports models, which this module must not depend on at import time.
-    from ticket_triage.priority.config import seed_defaults
 
     conn = get_db_connection(db_path)
     schema_file = Path(schema_path) if schema_path is not None else SCHEMA_FILE
@@ -81,7 +84,7 @@ def init_db(
         raise FileNotFoundError(f"Schema file not found at {schema_file}")
 
     if reset:
-        for table in ALL_TABLES:
+        for table in ALL_TABLES + LEGACY_TABLES:
             conn.execute(f"DROP TABLE IF EXISTS {table};")
         conn.commit()
 
@@ -90,7 +93,6 @@ def init_db(
 
     _add_missing_ticket_columns(conn)
     conn.executescript(schema_sql)
-    seed_defaults(conn)
     conn.commit()
     return conn
 

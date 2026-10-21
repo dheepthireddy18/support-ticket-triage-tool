@@ -19,10 +19,11 @@ from ticket_triage.db import DEFAULT_DB_PATH, init_db
 from ticket_triage.models import RejectedRecord, Ticket
 from ticket_triage.priority.base import parse_timestamp, utc_now
 from ticket_triage.priority.config import (
+    DEFAULT_RULES_FILE,
+    PriorityConfig,
     WorkerSettings,
-    import_rules,
-    load_engine,
-    load_worker_settings,
+    build_engine,
+    load_config,
 )
 from ticket_triage.priority.repository import (
     ResolveOutcome,
@@ -164,17 +165,17 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="TICKET_ID",
         help="Mark one ticket as resolved so it is no longer escalated, then exit.",
     )
-    action.add_argument(
-        "--import-rules",
-        type=file_name,
-        metavar="FILE",
-        help=f"Apply priority rule settings from a JSON file inside {DATA_DIR}/, then exit.",
-    )
     parser.add_argument(
         "--output",
         default="daily_summary.txt",
         type=file_name,
         help=f"Name of the report file, saved inside {REPORTS_DIR}/.",
+    )
+    parser.add_argument(
+        "--rules",
+        type=file_name,
+        metavar="FILE",
+        help=f"Name of the priority rules file inside {DATA_DIR}/ (default: {DEFAULT_RULES_FILE}).",
     )
     parser.add_argument(
         "--once",
@@ -185,15 +186,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--check-interval",
         type=positive_float,
         metavar="SECONDS",
-        help="How often the escalation worker checks open tickets (default from settings: 60).",
+        help="How often the escalation worker checks open tickets (default from the rules file).",
     )
     parser.add_argument(
         "--escalate-after",
         type=positive_float,
         metavar="HOURS",
-        help="Raise an open ticket one level after this many hours at its level (default from settings: 24).",
+        help="Raise an open ticket one level after this many hours at its level (default from the rules file).",
     )
     return parser
+
+
+def load_rules(name: str | None) -> PriorityConfig:
+    """
+    Read data/<name>, or data/priority_rules.json when no name is given.
+    A missing default file falls back to the built-in rules (with a notice);
+    a missing named file is an error. Raises ValueError or OSError.
+    """
+    path = DATA_DIR / (name or DEFAULT_RULES_FILE)
+    if not path.is_file():
+        if name:
+            raise FileNotFoundError(f"rules file not found: {path}")
+        print(f"note: {path} not found; using the built-in priority rules", file=sys.stderr)
+        return load_config(None)
+    try:
+        return load_config(path)
+    except ValueError as exc:
+        raise ValueError(f"invalid priority rules in {path}: {exc}") from exc
 
 
 def run_resolve(conn: sqlite3.Connection, ticket_id: str) -> int:
@@ -252,24 +271,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Database successfully initialized at {args.db}")
         return 0
 
-    if not (args.input or args.resolve or args.import_rules):
+    if not (args.input or args.resolve):
         parser.error("the following arguments are required: --input")
 
-    # Automatically ensure SQLite database, schema and default settings exist on startup
+    # Automatically ensure SQLite database and schema exist on startup
     conn = init_db(db_path=args.db)
     try:
         if args.resolve:
             return run_resolve(conn, args.resolve)
-
-        if args.import_rules:
-            rules_path = DATA_DIR / args.import_rules
-            try:
-                import_rules(conn, rules_path)
-            except (OSError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
-                print(f"error: could not import {rules_path}: {exc}", file=sys.stderr)
-                return 2
-            print(f"Priority rules updated from {rules_path}")
-            return 0
 
         input_path = DATA_DIR / args.input
         output_path = REPORTS_DIR / args.output
@@ -278,19 +287,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: input file not found: {input_path}", file=sys.stderr)
             return 2
 
+        # Read (and so validate) the rules file before doing any work.
+        try:
+            config = load_rules(args.rules)
+            engine = build_engine(config)
+        except (ValueError, OSError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
         try:
             inserted, rejected = load_tickets(conn, input_path)
         except (json.JSONDecodeError, OSError) as exc:
             print(f"error: could not read {input_path}: {exc}", file=sys.stderr)
             return 2
 
-        # Load (and so validate) every setting before doing any work.
-        try:
-            engine = load_engine(conn)
-            worker_settings = load_worker_settings(conn)
-        except ValueError as exc:
-            print(f"error: invalid priority rule settings: {exc}", file=sys.stderr)
-            return 2
         prioritized = prioritize_pending(conn, engine, utc_now())
 
         report = build_report(conn)
@@ -305,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.once:
             return 0
-        return run_worker(args, worker_settings)
+        return run_worker(args, config.worker)
     finally:
         conn.close()
 

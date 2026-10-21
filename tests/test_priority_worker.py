@@ -110,11 +110,12 @@ def test_worker_rejects_in_memory_database():
 @pytest.fixture
 def cli_dirs(tmp_path, monkeypatch):
     """Point the CLI's data/ and reports/ folders at a temp dir with the sample file."""
-    from conftest import SAMPLE_FILE
+    from conftest import RULES_FILE, SAMPLE_FILE
 
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     (data_dir / "sample_tickets.json").write_text(SAMPLE_FILE.read_text(encoding="utf-8"))
+    (data_dir / "priority_rules.json").write_text(RULES_FILE.read_text(encoding="utf-8"))
     monkeypatch.setattr(ticket_triage_cli, "DATA_DIR", data_dir)
     monkeypatch.setattr(ticket_triage_cli, "REPORTS_DIR", tmp_path / "reports")
     return tmp_path
@@ -168,3 +169,26 @@ def test_cli_starts_worker_and_stops_on_ctrl_c(cli_dirs, monkeypatch, capsys):
 def test_cli_rejects_bad_intervals(value):
     with pytest.raises(SystemExit):
         ticket_triage_cli.main(["--input", "x.json", "--check-interval", value])
+
+
+def test_cli_worker_intervals_come_from_rules_file(cli_dirs, monkeypatch):
+    import json
+
+    (cli_dirs / "data" / "priority_rules.json").write_text(
+        json.dumps({"worker": {"check_interval_seconds": 7, "escalate_after_hours": 3}}),
+        encoding="utf-8",
+    )
+    workers = []
+    monkeypatch.setattr(EscalationWorker, "start", lambda self: workers.append(self))
+    monkeypatch.setattr(EscalationWorker, "stop", lambda self, timeout=5: None)
+
+    def press_ctrl_c():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(ticket_triage_cli, "wait_for_interrupt", press_ctrl_c)
+
+    code = ticket_triage_cli.main(["--input", "sample_tickets.json", "--db", str(cli_dirs / "t.db")])
+
+    assert code == 0
+    assert workers[0].check_interval == 7
+    assert workers[0].escalate_after == timedelta(hours=3)

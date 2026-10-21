@@ -1,6 +1,7 @@
 -- SQLite Schema for Support Ticket Triage Tool
 -- Tables: tickets (valid, actionable), rejected_tickets (audit/DLQ),
--- plus priority tables: ticket_rule_results, rule_settings, priority_keywords, app_settings
+-- and ticket_rule_results (why each ticket got its priority).
+-- Priority rule settings live in data/priority_rules.json, not here.
 
 CREATE TABLE IF NOT EXISTS tickets (
     id TEXT PRIMARY KEY,
@@ -45,22 +46,3 @@ CREATE TABLE IF NOT EXISTS ticket_rule_results (
 );
 
 CREATE INDEX IF NOT EXISTS idx_ticket_rule_results_ticket_id ON ticket_rule_results(ticket_id);
-
--- Manager-editable settings (seeded with defaults by init_db)
-CREATE TABLE IF NOT EXISTS rule_settings (
-    rule_name TEXT PRIMARY KEY,          -- 'keyword', 'repeat_contact', 'waiting_time', 'llm_urgency'
-    enabled INTEGER NOT NULL DEFAULT 1,
-    weight REAL NOT NULL DEFAULT 1.0,
-    params TEXT                          -- JSON string of rule-specific parameters
-);
-
-CREATE TABLE IF NOT EXISTS priority_keywords (
-    keyword TEXT PRIMARY KEY,
-    score REAL NOT NULL,
-    min_level TEXT                       -- NULL, 'HIGH', 'MEDIUM', 'LOW'
-);
-
-CREATE TABLE IF NOT EXISTS app_settings (
-    key TEXT PRIMARY KEY,                -- e.g. 'worker_check_interval_seconds', 'escalate_after_hours'
-    value TEXT NOT NULL
-);

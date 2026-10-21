@@ -1,19 +1,17 @@
-"""Tests for manager-editable rule settings stored in SQLite."""
+"""Tests for reading priority settings from the rules file (data/priority_rules.json)."""
 
 import json
 from datetime import timedelta
 
 import pytest
+from conftest import RULES_FILE
 
 from ticket_triage.db import init_db
 from ticket_triage.priority.config import (
     DEFAULT_KEYWORDS,
-    import_rules,
-    load_engine,
-    load_keywords,
-    load_rule_settings,
-    load_worker_settings,
-    seed_defaults,
+    build_engine,
+    default_config,
+    load_config,
 )
 from ticket_triage.priority.keyword_rule import KeywordRule
 from ticket_triage.priority.waiting_rule import WaitingTimeRule
@@ -25,28 +23,9 @@ def write_json(tmp_path, data):
     return path
 
 
-def test_init_db_seeds_defaults(db_conn):
-    settings = load_rule_settings(db_conn)
-
-    assert set(settings) == {"keyword", "repeat_contact", "waiting_time", "llm_urgency"}
-    assert settings["llm_urgency"].enabled is False
-    assert len(load_keywords(db_conn)) == len(DEFAULT_KEYWORDS)
-
-
-def test_seed_is_idempotent_and_keeps_manager_changes(db_conn):
-    db_conn.execute("UPDATE rule_settings SET weight = 3 WHERE rule_name = 'keyword'")
-    db_conn.execute("DELETE FROM priority_keywords WHERE keyword = 'invoice'")
-    db_conn.commit()
-
-    seed_defaults(db_conn)
-    seed_defaults(db_conn)
-
-    assert load_rule_settings(db_conn)["keyword"].weight == 3
-    assert "invoice" not in {kw.phrase for kw in load_keywords(db_conn)}
-
-
-def test_load_engine_builds_enabled_rules_in_order(db_conn):
-    engine = load_engine(db_conn)
+def test_shipped_rules_file_loads_and_builds_all_rules():
+    config = load_config(RULES_FILE)
+    engine = build_engine(config)
 
     assert [rule.name for rule in engine.rules] == [
         "keyword",
@@ -57,40 +36,63 @@ def test_load_engine_builds_enabled_rules_in_order(db_conn):
     assert [rule.enabled for rule in engine.rules] == [True, True, True, False]
     assert engine.high_threshold == 70
     assert engine.medium_threshold == 40
+    assert config.worker.check_interval_seconds == 60
+    assert config.worker.escalate_after == timedelta(hours=24)
 
 
-def test_load_worker_settings_defaults(db_conn):
-    settings = load_worker_settings(db_conn)
-    assert settings.check_interval_seconds == 60
-    assert settings.escalate_after == timedelta(hours=24)
+def test_no_file_gives_the_built_in_defaults():
+    config = load_config(None)
+
+    assert config == default_config()
+    assert len(config.keywords) == len(DEFAULT_KEYWORDS)
 
 
-def test_import_updates_only_given_entries(db_conn, tmp_path):
+def test_empty_file_gives_the_built_in_defaults(tmp_path):
+    assert load_config(write_json(tmp_path, {})) == default_config()
+
+
+def test_partial_file_changes_only_what_it_sets(tmp_path):
     path = write_json(
         tmp_path,
         {
             "rules": {"waiting_time": {"weight": 0.5, "params": {"cap_hours": 48}}},
-            "settings": {"escalate_after_hours": 12},
+            "thresholds": {"high": 80},
         },
     )
 
-    import_rules(db_conn, path)
+    config = load_config(path)
+    engine = build_engine(config)
 
-    engine = load_engine(db_conn)
     waiting = next(r for r in engine.rules if isinstance(r, WaitingTimeRule))
     assert waiting.weight == 0.5
     assert waiting.cap_hours == 48
     assert next(r for r in engine.rules if r.name == "keyword").weight == 1.0
-    assert load_worker_settings(db_conn).escalate_after == timedelta(hours=12)
+    assert engine.high_threshold == 80
+    assert engine.medium_threshold == 40  # Not in the file: default kept
+    assert config.worker == default_config().worker
 
 
-def test_import_keywords_replaces_the_whole_list(db_conn, tmp_path):
-    path = write_json(tmp_path, {"keywords": [{"keyword": "refund", "score": 65}]})
+def test_keywords_replace_the_whole_list(tmp_path):
+    config = load_config(write_json(tmp_path, {"keywords": [{"keyword": "refund", "score": 65}]}))
 
-    import_rules(db_conn, path)
-
-    keyword_rule = next(r for r in load_engine(db_conn).rules if isinstance(r, KeywordRule))
+    keyword_rule = next(r for r in build_engine(config).rules if isinstance(r, KeywordRule))
     assert [kw.phrase for kw in keyword_rule.keywords] == ["refund"]
+
+
+def test_worker_section_sets_both_intervals(tmp_path):
+    path = write_json(tmp_path, {"worker": {"check_interval_seconds": 5, "escalate_after_hours": 1.5}})
+
+    worker = load_config(path).worker
+
+    assert worker.check_interval_seconds == 5
+    assert worker.escalate_after == timedelta(hours=1.5)
+
+
+def test_enabling_the_llm_rule(tmp_path):
+    config = load_config(write_json(tmp_path, {"rules": {"llm_urgency": {"enabled": True}}}))
+
+    llm = next(r for r in build_engine(config).rules if r.name == "llm_urgency")
+    assert llm.enabled is True
 
 
 @pytest.mark.parametrize(
@@ -98,23 +100,32 @@ def test_import_keywords_replaces_the_whole_list(db_conn, tmp_path):
     [
         {"rules": {"made_up_rule": {"weight": 1}}},
         {"rules": {"keyword": {"weight": -1}}},
+        {"rules": {"keyword": {"weight": "heavy"}}},
         {"rules": {"keyword": {"colour": "red"}}},
         {"rules": {"waiting_time": {"params": {"cap_hours": 0}}}},
         {"rules": {"waiting_time": {"params": {"not_a_param": 1}}}},
         {"keywords": [{"keyword": "outage", "score": 150}]},
         {"keywords": [{"keyword": "outage", "score": 90, "min_level": "SEVERE"}]},
-        {"settings": {"escalate_after_hours": 0}},
-        {"settings": {"worker_check_interval_seconds": -5}},
-        {"settings": {"high_threshold": 30, "medium_threshold": 60}},
-        {"settings": {"unknown_setting": 1}},
+        {"keywords": [{"keyword": "outage"}]},
+        {"keywords": [{"keyword": "outage", "score": 90, "colour": "red"}]},
+        {"worker": {"escalate_after_hours": 0}},
+        {"worker": {"check_interval_seconds": -5}},
+        {"worker": {"check_interval_seconds": "abc"}},
+        {"worker": {"unknown": 1}},
+        {"thresholds": {"high": 30, "medium": 60}},
+        {"thresholds": {"high": "seventy"}},
+        {"thresholds": {"low": 10}},
+        {"settings": {"escalate_after_hours": 12}},  # The old flat format is rejected clearly
         {"extra_section": {}},
         # Sections and entries of the wrong JSON type
+        [],
         {"rules": []},
         {"rules": {"keyword": 1}},
         {"rules": {"keyword": {"params": []}}},
         {"keywords": {"keyword": "outage", "score": 90}},
         {"keywords": ["outage"]},
-        {"settings": []},
+        {"worker": []},
+        {"thresholds": 70},
         # A keyword listed twice
         {"keywords": [{"keyword": "outage", "score": 90}, {"keyword": "outage", "score": 50}]},
         # "enabled" must be a real boolean: bool("false") would be True
@@ -122,13 +133,45 @@ def test_import_keywords_replaces_the_whole_list(db_conn, tmp_path):
         {"rules": {"waiting_time": {"enabled": 0}}},
     ],
 )
-def test_bad_import_raises_and_changes_nothing(db_conn, tmp_path, data):
-    before = (load_rule_settings(db_conn), load_keywords(db_conn))
-
+def test_bad_file_raises_value_error(tmp_path, data):
     with pytest.raises(ValueError):
-        import_rules(db_conn, write_json(tmp_path, data))
+        load_config(write_json(tmp_path, data))
 
-    assert (load_rule_settings(db_conn), load_keywords(db_conn)) == before
+
+def test_invalid_json_raises_value_error(tmp_path):
+    path = tmp_path / "rules.json"
+    path.write_text("{not json", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not valid JSON"):
+        load_config(path)
+
+
+def test_missing_file_raises_os_error(tmp_path):
+    with pytest.raises(OSError):
+        load_config(tmp_path / "nope.json")
+
+
+def test_init_db_no_longer_creates_settings_tables(db_conn):
+    tables = {row["name"] for row in db_conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+    assert {"tickets", "rejected_tickets", "ticket_rule_results"} <= tables
+    assert not {"rule_settings", "priority_keywords", "app_settings"} & tables
+
+
+def test_reset_also_drops_legacy_settings_tables(tmp_path):
+    path = tmp_path / "old.db"
+    conn = init_db(path)
+    conn.execute("CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.commit()
+    conn.close()
+
+    conn = init_db(path)  # A normal start leaves the old table alone
+    assert conn.execute("SELECT name FROM sqlite_master WHERE name='app_settings'").fetchone()
+    conn.close()
+
+    conn = init_db(path, reset=True)
+    assert conn.execute("SELECT name FROM sqlite_master WHERE name='app_settings'").fetchone() is None
+    conn.close()
 
 
 def test_older_database_gets_new_columns(tmp_path):

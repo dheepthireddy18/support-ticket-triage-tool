@@ -81,13 +81,8 @@ class PriorityEngine:
         return PriorityResult(ticket.id, score, level, results)
 
 
-def default_rules() -> list[PriorityRule]:
-    """The built-in rules with their default settings (no database needed)."""
-    from ticket_triage.priority.config import build_rules, default_settings
-
-    return build_rules(*default_settings())
-
-
 def build_default_engine() -> PriorityEngine:
-    """An engine with the default rules and thresholds."""
-    return PriorityEngine(default_rules())
+    """An engine with the built-in rules and thresholds (no rules file needed)."""
+    from ticket_triage.priority.config import build_engine, default_config
+
+    return build_engine(default_config())

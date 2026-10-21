@@ -14,7 +14,7 @@ from ticket_triage.models import (
     STATUS_RESOLVED,
     Ticket,
 )
-from ticket_triage.priority.config import load_engine
+from ticket_triage.priority.engine import build_default_engine
 from ticket_triage.priority.repository import (
     ResolveOutcome,
     escalate_overdue,
@@ -52,7 +52,7 @@ def set_level(conn, ticket_id, level, classified_at, status=STATUS_PROCESSED):
 def test_prioritize_pending_saves_level_score_and_reasons(db_conn, make_ticket, fixed_now):
     insert_ticket(db_conn, make_ticket(id="a", subject="Production outage"))
 
-    results = prioritize_pending(db_conn, load_engine(db_conn), fixed_now)
+    results = prioritize_pending(db_conn, build_default_engine(), fixed_now)
 
     stored = get(db_conn, "a")
     assert [r.ticket_id for r in results] == ["a"]
@@ -69,7 +69,7 @@ def test_prioritize_skips_already_processed_tickets(db_conn, make_ticket, fixed_
     set_level(db_conn, "old", PRIORITY_MEDIUM, fixed_now - DAY)
     insert_ticket(db_conn, make_ticket(id="new"))
 
-    results = prioritize_pending(db_conn, load_engine(db_conn), fixed_now)
+    results = prioritize_pending(db_conn, build_default_engine(), fixed_now)
 
     assert [r.ticket_id for r in results] == ["new"]
     assert get(db_conn, "old").priority_level == PRIORITY_MEDIUM
@@ -87,7 +87,7 @@ def test_fetch_pending_only_returns_pending(db_conn, make_ticket, fixed_now):
 
 def test_repeat_rule_counts_tickets_from_earlier_runs(db_conn, make_ticket, fixed_now):
     """A ticket already stored (and processed) in SQLite counts toward a new one."""
-    engine = load_engine(db_conn)
+    engine = build_default_engine()
     insert_ticket(db_conn, make_ticket(id="first", customer="CUST-9", created_at="2026-10-17T09:00:00Z"))
     prioritize_pending(db_conn, engine, fixed_now)
 

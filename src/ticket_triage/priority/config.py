@@ -1,15 +1,24 @@
 """
-Manager-editable rule settings, stored in SQLite.
+Manager-editable priority settings, read from a JSON file.
 
-Tables (see schema.sql): rule_settings, priority_keywords, app_settings.
-init_db() seeds the defaults below; a manager changes them with
-`ticket-triage --import-rules <file>.json` or any SQLite browser.
+The repo ships data/priority_rules.json; a manager changes rules by editing it.
+Shape (every section optional; missing parts fall back to the defaults below):
+
+    {
+      "thresholds": {"high": 70, "medium": 40},
+      "rules":      {"waiting_time": {"enabled": true, "weight": 0.5, "params": {"cap_hours": 48}}},
+      "keywords":   [{"keyword": "outage", "score": 90, "min_level": "HIGH"}],
+      "worker":     {"check_interval_seconds": 60, "escalate_after_hours": 24}
+    }
+
+"thresholds", "worker" and each entry in "rules" change only the fields they
+set. "keywords" replaces the whole keyword list. Everything is validated when
+the file is read.
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
@@ -21,6 +30,8 @@ from ticket_triage.priority.engine import PriorityEngine
 from ticket_triage.priority.keyword_rule import Keyword, KeywordRule
 from ticket_triage.priority.repeat_rule import RepeatContactRule
 from ticket_triage.priority.waiting_rule import WaitingTimeRule
+
+DEFAULT_RULES_FILE = "priority_rules.json"
 
 
 @dataclass(frozen=True)
@@ -34,6 +45,15 @@ class RuleSetting:
 class WorkerSettings:
     check_interval_seconds: float
     escalate_after: timedelta
+
+
+@dataclass(frozen=True)
+class PriorityConfig:
+    rules: dict[str, RuleSetting]
+    keywords: list[Keyword]
+    high_threshold: float
+    medium_threshold: float
+    worker: WorkerSettings
 
 
 DEFAULT_RULE_SETTINGS: dict[str, RuleSetting] = {
@@ -53,12 +73,9 @@ DEFAULT_KEYWORDS: list[Keyword] = [
     Keyword("feature request", 10),
 ]
 
-DEFAULT_APP_SETTINGS: dict[str, str] = {
-    "high_threshold": "70",
-    "medium_threshold": "40",
-    "worker_check_interval_seconds": "60",
-    "escalate_after_hours": "24",
-}
+DEFAULT_HIGH_THRESHOLD = 70.0
+DEFAULT_MEDIUM_THRESHOLD = 40.0
+DEFAULT_WORKER = WorkerSettings(check_interval_seconds=60.0, escalate_after=timedelta(hours=24))
 
 
 def _keyword_rule(setting: RuleSetting, keywords: list[Keyword]) -> PriorityRule:
@@ -91,8 +108,15 @@ RULE_BUILDERS: dict[str, Callable[[RuleSetting, list[Keyword]], PriorityRule]] =
 }
 
 
-def default_settings() -> tuple[dict[str, RuleSetting], list[Keyword]]:
-    return dict(DEFAULT_RULE_SETTINGS), list(DEFAULT_KEYWORDS)
+def default_config() -> PriorityConfig:
+    """The built-in settings, used when no rules file exists."""
+    return PriorityConfig(
+        rules=dict(DEFAULT_RULE_SETTINGS),
+        keywords=list(DEFAULT_KEYWORDS),
+        high_threshold=DEFAULT_HIGH_THRESHOLD,
+        medium_threshold=DEFAULT_MEDIUM_THRESHOLD,
+        worker=DEFAULT_WORKER,
+    )
 
 
 def build_rules(settings: dict[str, RuleSetting], keywords: list[Keyword]) -> list[PriorityRule]:
@@ -112,80 +136,15 @@ def build_rules(settings: dict[str, RuleSetting], keywords: list[Keyword]) -> li
     return rules
 
 
-def _build_engine(
-    settings: dict[str, RuleSetting], keywords: list[Keyword], app: dict[str, str]
-) -> PriorityEngine:
+def build_engine(config: PriorityConfig) -> PriorityEngine:
     return PriorityEngine(
-        build_rules(settings, keywords),
-        high_threshold=float(app["high_threshold"]),
-        medium_threshold=float(app["medium_threshold"]),
+        build_rules(config.rules, config.keywords),
+        high_threshold=config.high_threshold,
+        medium_threshold=config.medium_threshold,
     )
 
 
-def _worker_settings(app: dict[str, str]) -> WorkerSettings:
-    interval = float(app["worker_check_interval_seconds"])
-    hours = float(app["escalate_after_hours"])
-    if interval <= 0:
-        raise ValueError(f"worker_check_interval_seconds must be more than 0, got {interval}")
-    if hours <= 0:
-        raise ValueError(f"escalate_after_hours must be more than 0, got {hours}")
-    return WorkerSettings(interval, timedelta(hours=hours))
-
-
-# --- SQLite ------------------------------------------------------------------
-
-
-def seed_defaults(conn: sqlite3.Connection) -> None:
-    """Insert default settings that are missing. Never overwrites a manager's changes."""
-    conn.executemany(
-        "INSERT OR IGNORE INTO rule_settings (rule_name, enabled, weight, params) VALUES (?, ?, ?, ?)",
-        [
-            (name, int(s.enabled), s.weight, json.dumps(s.params))
-            for name, s in DEFAULT_RULE_SETTINGS.items()
-        ],
-    )
-    # Keywords are seeded only into an empty table, so a deleted keyword stays deleted.
-    if conn.execute("SELECT COUNT(*) FROM priority_keywords").fetchone()[0] == 0:
-        conn.executemany(
-            "INSERT INTO priority_keywords (keyword, score, min_level) VALUES (?, ?, ?)",
-            [(kw.phrase, kw.score, kw.min_level) for kw in DEFAULT_KEYWORDS],
-        )
-    conn.executemany(
-        "INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)",
-        list(DEFAULT_APP_SETTINGS.items()),
-    )
-    conn.commit()
-
-
-def load_rule_settings(conn: sqlite3.Connection) -> dict[str, RuleSetting]:
-    rows = conn.execute("SELECT rule_name, enabled, weight, params FROM rule_settings")
-    return {
-        row["rule_name"]: RuleSetting(
-            enabled=bool(row["enabled"]),
-            weight=float(row["weight"]),
-            params=json.loads(row["params"]) if row["params"] else {},
-        )
-        for row in rows
-    }
-
-
-def load_keywords(conn: sqlite3.Connection) -> list[Keyword]:
-    rows = conn.execute("SELECT keyword, score, min_level FROM priority_keywords ORDER BY keyword")
-    return [Keyword(row["keyword"], row["score"], row["min_level"]) for row in rows]
-
-
-def load_app_settings(conn: sqlite3.Connection) -> dict[str, str]:
-    stored = {row["key"]: row["value"] for row in conn.execute("SELECT key, value FROM app_settings")}
-    return {**DEFAULT_APP_SETTINGS, **stored}
-
-
-def load_engine(conn: sqlite3.Connection) -> PriorityEngine:
-    """Build the engine from the settings stored in the database."""
-    return _build_engine(load_rule_settings(conn), load_keywords(conn), load_app_settings(conn))
-
-
-def load_worker_settings(conn: sqlite3.Connection) -> WorkerSettings:
-    return _worker_settings(load_app_settings(conn))
+# --- Reading the file --------------------------------------------------------
 
 
 def _expect(value: Any, kind: type, what: str) -> Any:
@@ -196,77 +155,100 @@ def _expect(value: Any, kind: type, what: str) -> Any:
     return value
 
 
-def import_rules(conn: sqlite3.Connection, path: Path | str) -> None:
-    """
-    Apply a manager's JSON settings file. Shape (every section optional):
+def _number(value: Any, what: str) -> float:
+    """Return a JSON number as a float. true/false and strings are rejected."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{what} must be a number, got {value!r}")
+    return float(value)
 
-        {
-          "rules":    {"waiting_time": {"enabled": true, "weight": 0.5, "params": {"cap_hours": 48}}},
-          "keywords": [{"keyword": "outage", "score": 90, "min_level": "HIGH"}],
-          "settings": {"escalate_after_hours": 12}
-        }
 
-    "rules" and "settings" update only the entries given. "keywords" replaces
-    the whole keyword list. Everything is validated before anything is saved.
-    """
-    with Path(path).open(encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError("rules file must contain a JSON object")
-    unknown_sections = set(data) - {"rules", "keywords", "settings"}
-    if unknown_sections:
-        raise ValueError(f"unknown section(s) {sorted(unknown_sections)} in rules file")
+def _only(section: dict[str, Any], allowed: set[str], what: str) -> dict[str, Any]:
+    unknown = set(section) - allowed
+    if unknown:
+        raise ValueError(f"unknown field(s) {sorted(unknown)} in {what}")
+    return section
 
-    settings = load_rule_settings(conn)
+
+def parse_config(data: Any, base: PriorityConfig | None = None) -> PriorityConfig:
+    """Apply a parsed rules file on top of `base` (default: the built-in settings)."""
+    config = base or default_config()
+    _expect(data, dict, "rules file")
+    _only(data, {"thresholds", "rules", "keywords", "worker"}, "rules file")
+
+    thresholds = _only(
+        _expect(data.get("thresholds", {}), dict, '"thresholds"'), {"high", "medium"}, '"thresholds"'
+    )
+    high = _number(thresholds.get("high", config.high_threshold), "thresholds.high")
+    medium = _number(thresholds.get("medium", config.medium_threshold), "thresholds.medium")
+
+    rules = dict(config.rules)
     for name, changes in _expect(data.get("rules", {}), dict, '"rules"').items():
-        _expect(changes, dict, f"rule {name!r}")
-        unknown_fields = set(changes) - {"enabled", "weight", "params"}
-        if unknown_fields:
-            raise ValueError(f"unknown field(s) {sorted(unknown_fields)} for rule {name!r}")
-        current = settings.get(name, RuleSetting())
-        settings[name] = replace(
+        _only(_expect(changes, dict, f"rule {name!r}"), {"enabled", "weight", "params"}, f"rule {name!r}")
+        current = rules.get(name, RuleSetting())
+        rules[name] = replace(
             current,
             enabled=_expect(changes.get("enabled", current.enabled), bool, f"{name!r} enabled"),
-            weight=float(changes.get("weight", current.weight)),
+            weight=_number(changes.get("weight", current.weight), f"{name!r} weight"),
             params={
                 **current.params,
                 **_expect(changes.get("params", {}), dict, f"{name!r} params"),
             },
         )
 
-    keywords = load_keywords(conn)
+    keywords = config.keywords
     if "keywords" in data:
         keywords = []
         for item in _expect(data["keywords"], list, '"keywords"'):
-            _expect(item, dict, "each keyword")
-            keywords.append(Keyword(str(item["keyword"]), item["score"], item.get("min_level")))
+            _only(_expect(item, dict, "each keyword"), {"keyword", "score", "min_level"}, "a keyword")
+            if "keyword" not in item or "score" not in item:
+                raise ValueError(f'each keyword needs "keyword" and "score", got {item!r}')
+            keywords.append(
+                Keyword(str(item["keyword"]), _number(item["score"], "keyword score"), item.get("min_level"))
+            )
         phrases = [kw.phrase for kw in keywords]
         duplicates = sorted({p for p in phrases if phrases.count(p) > 1})
         if duplicates:
             raise ValueError(f"duplicate keyword(s) {duplicates}")
 
-    app = load_app_settings(conn)
-    _expect(data.get("settings", {}), dict, '"settings"')
-    unknown_keys = set(data.get("settings", {})) - set(DEFAULT_APP_SETTINGS)
-    if unknown_keys:
-        raise ValueError(f"unknown setting(s) {sorted(unknown_keys)}")
-    app.update({key: str(value) for key, value in data.get("settings", {}).items()})
+    worker_data = _only(
+        _expect(data.get("worker", {}), dict, '"worker"'),
+        {"check_interval_seconds", "escalate_after_hours"},
+        '"worker"',
+    )
+    interval = _number(
+        worker_data.get("check_interval_seconds", config.worker.check_interval_seconds),
+        "worker.check_interval_seconds",
+    )
+    hours = _number(
+        worker_data.get("escalate_after_hours", config.worker.escalate_after.total_seconds() / 3600),
+        "worker.escalate_after_hours",
+    )
+    if interval <= 0:
+        raise ValueError(f"worker.check_interval_seconds must be more than 0, got {interval:g}")
+    if hours <= 0:
+        raise ValueError(f"worker.escalate_after_hours must be more than 0, got {hours:g}")
 
-    # Validate by building exactly what a run would build.
-    _build_engine(settings, keywords, app)
-    _worker_settings(app)
+    result = PriorityConfig(
+        rules=rules,
+        keywords=keywords,
+        high_threshold=high,
+        medium_threshold=medium,
+        worker=WorkerSettings(interval, timedelta(hours=hours)),
+    )
+    build_engine(result)  # Validate by building exactly what a run would build
+    return result
 
-    with conn:
-        conn.executemany(
-            "INSERT OR REPLACE INTO rule_settings (rule_name, enabled, weight, params) VALUES (?, ?, ?, ?)",
-            [(n, int(s.enabled), s.weight, json.dumps(s.params)) for n, s in settings.items()],
-        )
-        if "keywords" in data:
-            conn.execute("DELETE FROM priority_keywords")
-            conn.executemany(
-                "INSERT INTO priority_keywords (keyword, score, min_level) VALUES (?, ?, ?)",
-                [(kw.phrase, kw.score, kw.min_level) for kw in keywords],
-            )
-        conn.executemany(
-            "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)", list(app.items())
-        )
+
+def load_config(path: Path | str | None) -> PriorityConfig:
+    """
+    Read and validate a rules file. None means "no file": the built-in defaults.
+    Raises OSError if the file can't be read and ValueError if it is invalid.
+    """
+    if path is None:
+        return default_config()
+    with Path(path).open(encoding="utf-8") as f:
+        try:
+            data = json.load(f)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"not valid JSON: {exc}") from exc
+    return parse_config(data)

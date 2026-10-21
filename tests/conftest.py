@@ -11,6 +11,7 @@ from ticket_triage.models import Ticket
 from ticket_triage.priority.base import TriageContext
 
 SAMPLE_FILE = Path(__file__).resolve().parents[1] / "data" / "sample_tickets.json"
+RULES_FILE = Path(__file__).resolve().parents[1] / "data" / "priority_rules.json"
 
 FIXED_NOW = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
 
