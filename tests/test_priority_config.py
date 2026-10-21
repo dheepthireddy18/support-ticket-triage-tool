@@ -108,6 +108,18 @@ def test_import_keywords_replaces_the_whole_list(db_conn, tmp_path):
         {"settings": {"high_threshold": 30, "medium_threshold": 60}},
         {"settings": {"unknown_setting": 1}},
         {"extra_section": {}},
+        # Sections and entries of the wrong JSON type
+        {"rules": []},
+        {"rules": {"keyword": 1}},
+        {"rules": {"keyword": {"params": []}}},
+        {"keywords": {"keyword": "outage", "score": 90}},
+        {"keywords": ["outage"]},
+        {"settings": []},
+        # A keyword listed twice
+        {"keywords": [{"keyword": "outage", "score": 90}, {"keyword": "outage", "score": 50}]},
+        # "enabled" must be a real boolean: bool("false") would be True
+        {"rules": {"waiting_time": {"enabled": "false"}}},
+        {"rules": {"waiting_time": {"enabled": 0}}},
     ],
 )
 def test_bad_import_raises_and_changes_nothing(db_conn, tmp_path, data):

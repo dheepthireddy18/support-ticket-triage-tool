@@ -188,6 +188,14 @@ def load_worker_settings(conn: sqlite3.Connection) -> WorkerSettings:
     return _worker_settings(load_app_settings(conn))
 
 
+def _expect(value: Any, kind: type, what: str) -> Any:
+    """Return value unchanged, or raise ValueError if it is not of the JSON type `kind`."""
+    if not isinstance(value, kind):
+        names = {dict: "an object", list: "a list", bool: "true or false"}
+        raise ValueError(f"{what} must be {names[kind]}, got {value!r}")
+    return value
+
+
 def import_rules(conn: sqlite3.Connection, path: Path | str) -> None:
     """
     Apply a manager's JSON settings file. Shape (every section optional):
@@ -210,26 +218,35 @@ def import_rules(conn: sqlite3.Connection, path: Path | str) -> None:
         raise ValueError(f"unknown section(s) {sorted(unknown_sections)} in rules file")
 
     settings = load_rule_settings(conn)
-    for name, changes in data.get("rules", {}).items():
+    for name, changes in _expect(data.get("rules", {}), dict, '"rules"').items():
+        _expect(changes, dict, f"rule {name!r}")
         unknown_fields = set(changes) - {"enabled", "weight", "params"}
         if unknown_fields:
             raise ValueError(f"unknown field(s) {sorted(unknown_fields)} for rule {name!r}")
         current = settings.get(name, RuleSetting())
         settings[name] = replace(
             current,
-            enabled=bool(changes.get("enabled", current.enabled)),
+            enabled=_expect(changes.get("enabled", current.enabled), bool, f"{name!r} enabled"),
             weight=float(changes.get("weight", current.weight)),
-            params={**current.params, **changes.get("params", {})},
+            params={
+                **current.params,
+                **_expect(changes.get("params", {}), dict, f"{name!r} params"),
+            },
         )
 
     keywords = load_keywords(conn)
     if "keywords" in data:
-        keywords = [
-            Keyword(str(item["keyword"]), item["score"], item.get("min_level"))
-            for item in data["keywords"]
-        ]
+        keywords = []
+        for item in _expect(data["keywords"], list, '"keywords"'):
+            _expect(item, dict, "each keyword")
+            keywords.append(Keyword(str(item["keyword"]), item["score"], item.get("min_level")))
+        phrases = [kw.phrase for kw in keywords]
+        duplicates = sorted({p for p in phrases if phrases.count(p) > 1})
+        if duplicates:
+            raise ValueError(f"duplicate keyword(s) {duplicates}")
 
     app = load_app_settings(conn)
+    _expect(data.get("settings", {}), dict, '"settings"')
     unknown_keys = set(data.get("settings", {})) - set(DEFAULT_APP_SETTINGS)
     if unknown_keys:
         raise ValueError(f"unknown setting(s) {sorted(unknown_keys)}")

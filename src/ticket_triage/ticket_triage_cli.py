@@ -18,7 +18,12 @@ from pathlib import Path
 from ticket_triage.db import DEFAULT_DB_PATH, init_db
 from ticket_triage.models import RejectedRecord, Ticket
 from ticket_triage.priority.base import parse_timestamp, utc_now
-from ticket_triage.priority.config import import_rules, load_engine, load_worker_settings
+from ticket_triage.priority.config import (
+    WorkerSettings,
+    import_rules,
+    load_engine,
+    load_worker_settings,
+)
 from ticket_triage.priority.repository import (
     ResolveOutcome,
     prioritize_pending,
@@ -210,8 +215,7 @@ def wait_for_interrupt() -> None:
         time.sleep(0.5)
 
 
-def run_worker(args: argparse.Namespace, conn: sqlite3.Connection) -> int:
-    settings = load_worker_settings(conn)
+def run_worker(args: argparse.Namespace, settings: WorkerSettings) -> int:
     interval = args.check_interval or settings.check_interval_seconds
     after = (
         timedelta(hours=args.escalate_after) if args.escalate_after else settings.escalate_after
@@ -280,8 +284,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: could not read {input_path}: {exc}", file=sys.stderr)
             return 2
 
+        # Load (and so validate) every setting before doing any work.
         try:
             engine = load_engine(conn)
+            worker_settings = load_worker_settings(conn)
         except ValueError as exc:
             print(f"error: invalid priority rule settings: {exc}", file=sys.stderr)
             return 2
@@ -299,7 +305,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.once:
             return 0
-        return run_worker(args, conn)
+        return run_worker(args, worker_settings)
     finally:
         conn.close()
 

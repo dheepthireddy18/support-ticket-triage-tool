@@ -103,3 +103,16 @@ def test_import_rules_reports_bad_file(loaded_db, tmp_path, capsys):
 
     assert code == 2
     assert "could not import" in capsys.readouterr().err
+
+
+def test_bad_worker_setting_fails_cleanly_before_any_work(loaded_db, capsys):
+    conn = get_db_connection(loaded_db)
+    with conn:
+        conn.execute("UPDATE app_settings SET value = 'abc' WHERE key = 'escalate_after_hours'")
+    conn.close()
+
+    # No --once: without the fix this would reach the worker and raise a traceback.
+    code = ticket_triage_cli.main(["--input", "sample_tickets.json", "--db", str(loaded_db)])
+
+    assert code == 2
+    assert "invalid priority rule settings" in capsys.readouterr().err
