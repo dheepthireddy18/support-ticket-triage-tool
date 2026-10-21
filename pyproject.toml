@@ -11,8 +11,8 @@ requires-python = ">=3.10"
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
-llm = ["anthropic>=1"]  # optional LLM urgency rule
+dev = ["pytest>=8", "python-dotenv>=1"]
+llm = ["anthropic>=1", "python-dotenv>=1"]  # optional LLM urgency rule
 
 [project.scripts]
 ticket-triage = "ticket_triage.ticket_triage_cli:main"

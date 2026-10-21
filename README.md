@@ -112,10 +112,19 @@ The engine, CLI, report and worker need no changes.
 
 ```
 pip install -e ".[llm]"
-export ANTHROPIC_API_KEY=...
 ```
 
-Then set `"llm_urgency": {"enabled": true}` in a rules file and import it. The tool still works without a key: the rule just gives no score.
+The rule uses the class Azure sandbox. Copy `.env.example` to `.env` in the project folder (`.env` is already in `.gitignore`, so Git never sees it) and fill in your values. Put one setting on each line, with no quotes or spaces:
+
+```
+AZURE_AI_KEY=<your key>
+AZURE_AI_ENDPOINT=<the endpoint>
+AZURE_AI_DEPLOYMENT=<the deployment name>
+```
+
+The rule calls `{endpoint}/anthropic/v1/messages` and uses the deployment name as the model. If no `AZURE_AI_*` settings are present, it uses `ANTHROPIC_API_KEY` with Anthropic's own API instead. Values already set in your shell win over `.env`.
+
+Then set `"llm_urgency": {"enabled": true}` in a rules file and import it. The tool still works without a key. The rule just gives no score, and its reason in `ticket_rule_results` says why (for example `incomplete Azure settings, missing AZURE_AI_ENDPOINT`).
 
 ## Running the Tests
 
