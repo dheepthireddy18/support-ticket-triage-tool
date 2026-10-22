@@ -7,7 +7,8 @@ Counting, ordering and limits are done in SQL. created_at is stored as
 ISO-8601 text, so ORDER BY created_at is chronological as long as the stored
 values share one format. Ties are broken by id so results are deterministic.
 
-build_report_data() combines the queries into one ReportData for rendering.
+build_report_data() combines the queries into one ReportData. render_report()
+turns that into manager-first plain text and write_report() saves it.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from ticket_triage.models import (
     PRIORITY_HIGH,
@@ -25,6 +27,11 @@ from ticket_triage.models import (
 
 PRIORITY_LEVELS = (PRIORITY_HIGH, PRIORITY_MEDIUM, PRIORITY_LOW)
 DEFAULT_TOP_N = 5
+
+REPORT_TITLE = "Daily Support Ticket Summary"
+NO_URGENT_MESSAGE = "No urgent tickets today"
+NO_TICKETS_MESSAGE = "No tickets to show"
+UNCLASSIFIED_LABEL = "Unclassified"
 
 
 @dataclass(frozen=True)
@@ -155,3 +162,79 @@ def build_report_data(
         longest_waiting=_with_waiting(fetch_longest_waiting(conn, top_n), now),
         rejected_count=count_rejected(conn),
     )
+
+
+# --- Rendering and output -----------------------------------------------------
+
+
+def format_waiting(waiting: timedelta) -> str:
+    """
+    Format a waiting time for people: "2d 3h", "5h 12m", "42m" or "<1m".
+
+    Only the two largest units are shown. Seconds are dropped, and a negative
+    waiting time is shown as zero.
+    """
+    total_minutes = max(int(waiting.total_seconds() // 60), 0)
+    days, remainder = divmod(total_minutes, 24 * 60)
+    hours, minutes = divmod(remainder, 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    if minutes:
+        return f"{minutes}m"
+    return "<1m"
+
+
+def _ticket_row(entry: ReportTicket) -> str:
+    """One report line: id, customer, subject, priority and waiting time."""
+    ticket = entry.ticket
+    subject = " ".join(ticket.subject.split())  # keep each ticket on one line
+    priority = ticket.priority_level or UNCLASSIFIED_LABEL
+    return (
+        f"  {ticket.id} | {ticket.customer} | {subject} | {priority} "
+        f"| waiting {format_waiting(entry.waiting)}"
+    )
+
+
+def _ticket_section(title: str, entries: list[ReportTicket], empty: str) -> list[str]:
+    """A titled block of ticket rows, or the empty message so it is never blank."""
+    lines = [title, "-" * len(title)]
+    lines += [_ticket_row(e) for e in entries] if entries else [f"  {empty}"]
+    return lines
+
+
+def render_report(data: ReportData) -> str:
+    """
+    Render the report as plain text, manager-first: header, then tickets that
+    need attention, then counts by priority, then tickets waiting longest.
+    The "Unclassified" line appears only when there are unclassified tickets.
+    """
+    lines = [
+        REPORT_TITLE,
+        f"Date: {data.generated_at.strftime('%Y-%m-%d %H:%M %Z').strip()}",
+        f"Total tickets: {data.total_tickets}",
+        f"Rejected records: {data.rejected_count}",
+        "",
+    ]
+    lines += _ticket_section(
+        "Needs attention first", data.top_urgent, NO_URGENT_MESSAGE
+    )
+    lines += ["", "Counts by priority", "------------------"]
+    for level in PRIORITY_LEVELS:
+        lines.append(f"  {level}: {data.counts_by_priority[level]}")
+    if data.unclassified_count > 0:
+        lines.append(f"  {UNCLASSIFIED_LABEL}: {data.unclassified_count}")
+    lines.append("")
+    lines += _ticket_section(
+        "Waiting longest", data.longest_waiting, NO_TICKETS_MESSAGE
+    )
+    return "\n".join(lines) + "\n"
+
+
+def write_report(text: str, path: Path | str) -> Path:
+    """Write the report to `path` as UTF-8, creating missing folders. Returns the path."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
