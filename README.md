@@ -113,7 +113,7 @@ python -m ticket_triage.demo                  # creates data/demo.db (reset each
 python -m ticket_triage --db data/demo.db     # report from the demo database
 ```
 
-The demo data has 12 tickets, with more HIGH tickets than the default `--top` and a tie on creation time, plus two rejected records. Its priorities are written directly, not scored by the rules, so it has no entries in `ticket_rule_results`.
+The seeder resets the database it writes to, so it refuses to touch a database that holds other tickets unless you pass `--force`. The demo data has 12 tickets, with more HIGH tickets than the default `--top` and a tie on creation time, plus two rejected records. Its priorities are written directly, not scored by the rules, so it has no entries in `ticket_rule_results`.
 
 ## Priority Rules
 

@@ -140,6 +140,16 @@ class TestRenderReport:
 
         assert "Line one line two" in render_report(data)
 
+    def test_newlines_in_any_field_do_not_break_the_row(self, data):
+        # CSV fields can contain line breaks; each ticket must still be one line.
+        data.top_urgent = [
+            entry("t-\n1", "HIGH", timedelta(hours=1), "Site\nis down", "ACME\nCorp")
+        ]
+
+        text = render_report(data)
+
+        assert "  t- 1 | ACME Corp | Site is down | HIGH | waiting 1h 0m" in text.splitlines()
+
     def test_day_with_no_urgent_tickets(self, data):
         data.top_urgent = []
 

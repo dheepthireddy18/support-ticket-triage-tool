@@ -6,6 +6,9 @@ They include a tie on created_at, more HIGH tickets than the default --top, and
 two rejected records. Priorities are written directly (as if the rules had
 already run), so every ticket is PROCESSED and no ticket is unclassified.
 
+The seeder resets the database it writes to, so it refuses to touch a database
+that holds tickets other than demo tickets unless --force is given.
+
 Usage:
     python -m ticket_triage.demo                  # writes data/demo.db
     python -m ticket_triage --db data/demo.db     # report from the demo database
@@ -15,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -89,6 +93,20 @@ def seed_demo_db(conn: sqlite3.Connection, now: datetime) -> None:
             )
 
 
+def count_non_demo_tickets(db_path: Path | str) -> int:
+    """Tickets in an existing database whose id does not start with "demo-" (0 if none)."""
+    if str(db_path) == ":memory:" or not Path(db_path).is_file():
+        return 0
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM tickets WHERE id NOT LIKE 'demo-%'").fetchone()
+        return row[0]
+    except sqlite3.OperationalError:
+        return 0  # No tickets table, so nothing to lose
+    finally:
+        conn.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     """Create (or recreate) the demo database. Returns a process exit code."""
     parser = argparse.ArgumentParser(
@@ -100,9 +118,26 @@ def main(argv: list[str] | None = None) -> int:
         default=str(DEMO_DB_PATH),
         help=f"Path of the demo database (default: {DEMO_DB_PATH}). It is reset first.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Reset the database even if it holds tickets that are not demo tickets.",
+    )
     args = parser.parse_args(argv)
 
-    conn = init_db(db_path=args.db, reset=True)
+    try:
+        other = 0 if args.force else count_non_demo_tickets(args.db)
+        if other:
+            print(
+                f"error: {args.db} holds {other} ticket(s) that are not demo tickets and "
+                "would be erased. Choose another --db, or pass --force to reset it anyway.",
+                file=sys.stderr,
+            )
+            return 2
+        conn = init_db(db_path=args.db, reset=True)
+    except sqlite3.Error as exc:
+        print(f"error: could not use database {args.db}: {exc}", file=sys.stderr)
+        return 2
     try:
         seed_demo_db(conn, datetime.now(timezone.utc))
     finally:

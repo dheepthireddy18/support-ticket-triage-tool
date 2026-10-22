@@ -134,3 +134,12 @@ def test_day_with_no_high_tickets(conn, add_ticket):
     assert data.top_urgent == []
     assert data.counts_by_priority["HIGH"] == 0
     assert [r.ticket.id for r in data.longest_waiting] == ["a", "b"]
+
+
+def test_huge_top_n_returns_everything_instead_of_overflowing(conn, add_ticket):
+    add_ticket("a", "2026-10-19T08:00:00Z", "HIGH")
+
+    data = build_report_data(conn, NOW, top_n=10**30)  # beyond SQLite's integer range
+
+    assert [r.ticket.id for r in data.top_urgent] == ["a"]
+    assert [r.ticket.id for r in data.longest_waiting] == ["a"]

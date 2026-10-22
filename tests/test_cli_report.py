@@ -158,3 +158,64 @@ class TestTopOption:
 
         assert exc.value.code == 2
         assert "--top" in capsys.readouterr().err
+
+
+class TestDatabaseOption:
+    def test_huge_top_does_not_crash(self, workdir):
+        name = write_input(workdir, [make_record("t-1")])
+
+        code, text = run_cli(workdir, "--input", name, "--top", "99999999999999999999")
+
+        assert code == 0
+        assert "t-1 |" in text
+
+    def test_report_only_run_on_a_new_database_says_so(self, workdir, capsys):
+        code, _ = run_cli(workdir)
+
+        assert code == 0
+        assert "did not exist" in capsys.readouterr().err
+
+    def test_no_note_when_the_database_already_exists(self, workdir, capsys):
+        run_cli(workdir)  # creates it
+        capsys.readouterr()
+
+        run_cli(workdir)
+
+        assert "did not exist" not in capsys.readouterr().err
+
+    def test_no_note_when_loading_a_file_into_a_new_database(self, workdir, capsys):
+        name = write_input(workdir, [make_record("t-1")])
+
+        run_cli(workdir, "--input", name)
+
+        assert "did not exist" not in capsys.readouterr().err
+
+    def test_database_path_that_is_a_folder_exits_with_error(self, workdir, capsys):
+        folder = workdir / "a_folder"
+        folder.mkdir()
+
+        code = cli.main(["--db", str(folder), "--output", "r.txt"])
+
+        assert code == 2
+        assert "could not open database" in capsys.readouterr().err
+
+    def test_database_path_that_is_not_a_database_exits_with_error(self, workdir, capsys):
+        junk = workdir / "junk.db"
+        junk.write_text("this is not sqlite", encoding="utf-8")
+
+        code = cli.main(["--db", str(junk), "--output", "r.txt"])
+
+        assert code == 2
+        assert "could not open database" in capsys.readouterr().err
+
+
+class TestReportOutput:
+    def test_report_that_cannot_be_written_exits_with_error(self, workdir, monkeypatch, capsys):
+        blocker = workdir / "not_a_folder"
+        blocker.write_text("a file where the reports folder should be", encoding="utf-8")
+        monkeypatch.setattr(cli, "REPORTS_DIR", blocker)
+
+        code = cli.main(["--db", str(workdir / "t.db")])
+
+        assert code == 2
+        assert "could not write the report" in capsys.readouterr().err

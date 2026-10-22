@@ -199,7 +199,19 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
     # Automatically ensure SQLite database and schema exist on startup
-    conn = init_db(db_path=args.db)
+    db_is_new = args.db != ":memory:" and not Path(args.db).exists()
+    try:
+        conn = init_db(db_path=args.db)
+    except sqlite3.Error as exc:
+        print(f"error: could not open database {args.db}: {exc}", file=sys.stderr)
+        return 2
+    if db_is_new and tickets is None:
+        # Most likely a mistyped --db: say so instead of reporting an empty day silently.
+        print(
+            f"note: {args.db} did not exist, so an empty database was created. "
+            "Use --input to load tickets.",
+            file=sys.stderr,
+        )
     try:
         stored = skipped = 0
         if tickets is not None:
@@ -212,7 +224,11 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
 
-    write_report(render_report(data), output_path)
+    try:
+        write_report(render_report(data), output_path)
+    except OSError as exc:
+        print(f"error: could not write the report to {output_path}: {exc}", file=sys.stderr)
+        return 2
 
     loaded = f"Stored {stored} new ticket(s), skipped {skipped}. " if tickets is not None else ""
     print(
