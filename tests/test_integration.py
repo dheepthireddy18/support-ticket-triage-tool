@@ -31,19 +31,17 @@ def run_tool(*args):
     )
 
 
-# TODO: the sample-file test below uses the shared default data/tickets.db. The
-# report lists only --top (5) tickets, so it finds all five sample ids only while
-# that database holds nothing else; consider passing --db with a temporary file.
-# TODO(if Natalie's escalation worker lands): if it blocks the CLI until Ctrl+C,
-# every run_tool() call needs an opt-out flag (e.g. "--once") or the tests hang.
-def test_full_tool_on_sample_file_writes_report():
-    # The tool reads data/<name> and writes reports/<name>.
+def test_full_tool_on_sample_file_writes_report(tmp_path):
+    # The tool reads data/<name> and writes reports/<name>. A temporary database
+    # keeps the test independent of (and from changing) the local data/tickets.db.
     report_path = PROJECT_ROOT / "reports" / "integration_test_report.txt"
     report_path.unlink(missing_ok=True)
 
     try:
         result = run_tool(
-            "--input", SAMPLE_FILE.name, "--output", report_path.name
+            "--input", SAMPLE_FILE.name,
+            "--output", report_path.name,
+            "--db", str(tmp_path / "tickets.db"),
         )
 
         assert result.returncode == 0, result.stderr

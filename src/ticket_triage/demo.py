@@ -57,9 +57,6 @@ DEMO_REJECTED = (
 )
 
 
-# TODO(if Natalie's escalation work lands): its new tickets columns and RESOLVED
-# status must not break the INSERT below (it names its columns, so adding columns
-# is safe). Re-run the demo tests and consider a RESOLVED demo ticket.
 def seed_demo_db(conn: sqlite3.Connection, now: datetime) -> None:
     """Insert the demo tickets and rejected records, dated relative to `now`."""
     stamp = now.isoformat()
