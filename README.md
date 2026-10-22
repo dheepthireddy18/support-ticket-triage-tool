@@ -127,7 +127,7 @@ The `jev_urgency` rule asks [TypeSafe's Jev](https://docs.typesafe.ai) where the
 
 2. Turn the rule on by setting `"enabled": true` under `jev_urgency` in `data/priority_rules.json`. Optional `params`: `min_confidence` (0–1; below it the rule gives no score and the other rules decide), `model` (default `jev-latest`) and `timeout_seconds`.
 
-No extra packages are needed. Like the Claude rule, it gives no score if the key is missing or a call fails, and its reason in `ticket_rule_results` says why. It can run alongside `llm_urgency`, each with its own weight.
+It needs no extra packages, but install `pip install -e ".[llm]"` anyway if you're on a Mac with Python from python.org: it adds `truststore`, which lets Python check HTTPS certificates using the Mac's keychain. Without it, calls fail with `CERTIFICATE_VERIFY_FAILED` (as does any Python HTTPS call) until you run "Install Certificates.command" from the Python folder in Applications. Like the Claude rule, it gives no score if the key is missing or a call fails, and its reason in `ticket_rule_results` says why. It can run alongside `llm_urgency`, each with its own weight.
 
 ## Running the Tests
 

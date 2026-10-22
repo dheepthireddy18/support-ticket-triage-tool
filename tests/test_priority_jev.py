@@ -187,3 +187,17 @@ def test_engine_uses_jev_score_alongside_other_rules(make_ticket, fixed_now, key
     result = engine.score(ticket, TriageContext(now=fixed_now))
 
     assert result.score == pytest.approx(75)  # (50 + 100) / 2
+
+
+def test_ssl_context_uses_os_certificates_when_truststore_is_installed():
+    pytest.importorskip("truststore")
+    import truststore
+
+    assert isinstance(jev_rule.ssl_context(), truststore.SSLContext)
+
+
+def test_ssl_context_falls_back_to_default_without_truststore(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "truststore", None)  # import truststore -> ImportError
+    assert jev_rule.ssl_context() is None

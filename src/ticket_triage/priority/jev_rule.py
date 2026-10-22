@@ -9,7 +9,9 @@ confident it is. This rule maps that position onto 0-100.
 
 Disabled by default. When enabled it abstains (score None) if TYPESAFE_API_KEY
 isn't set (in the environment or .env) or the call fails for any reason, so the
-tool always works with the other rules alone. Uses only the standard library.
+tool always works with the other rules alone. Uses the standard library, plus
+`truststore` (from the [llm] extra) when installed, so HTTPS is verified against
+the operating system's certificates.
 API: POST https://api.typesafe.ai/v1/systemone (https://docs.typesafe.ai).
 """
 
@@ -18,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import ssl
 import urllib.error
 import urllib.request
 from typing import Any, Callable
@@ -47,13 +50,26 @@ URGENCY_LEVELS = [
 Transport = Callable[[str, dict[str, str], dict[str, Any], float], dict[str, Any]]
 
 
+def ssl_context() -> ssl.SSLContext | None:
+    """
+    Verify HTTPS against the OS certificate store when truststore is installed.
+    Python from python.org on macOS otherwise has no certificates until its
+    "Install Certificates" script is run. None means urllib's default.
+    """
+    try:
+        import truststore
+    except ImportError:
+        return None
+    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+
 def urllib_transport(
     url: str, headers: dict[str, str], body: dict[str, Any], timeout: float
 ) -> dict[str, Any]:
     request = urllib.request.Request(
         url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST"
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
+    with urllib.request.urlopen(request, timeout=timeout, context=ssl_context()) as response:
         return json.load(response)
 
 
