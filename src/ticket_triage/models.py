@@ -46,6 +46,7 @@ class Ticket:
     priority_level: str | None = None  # HIGH, MEDIUM, LOW
     classified_at: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    resolved_at: str | None = None  # Set when support closes the ticket; independent of status
 
     def __post_init__(self) -> None:
         if not self.content_hash:
@@ -87,6 +88,7 @@ class Ticket:
             "priority_level": self.priority_level,
             "classified_at": self.classified_at,
             "metadata": dict(self.metadata),
+            "resolved_at": self.resolved_at,
         }
 
     @classmethod
@@ -107,6 +109,7 @@ class Ticket:
             "priority_level",
             "classified_at",
             "metadata",
+            "resolved_at",
         }
         metadata = dict(data.get("metadata", {}))
         for key, value in data.items():
@@ -125,7 +128,13 @@ class Ticket:
             priority_level=data.get("priority_level"),
             classified_at=data.get("classified_at"),
             metadata=metadata,
+            resolved_at=data.get("resolved_at"),
         )
+
+    @property
+    def is_resolved(self) -> bool:
+        """True once support has closed the ticket (`status` tracks processing only)."""
+        return self.resolved_at is not None
 
     def to_db_tuple(self) -> tuple[Any, ...]:
         """
@@ -181,6 +190,7 @@ class Ticket:
             if "classified_at" in row.keys()
             else None,
             metadata=metadata,
+            resolved_at=row["resolved_at"] if "resolved_at" in row.keys() else None,
         )
 
 

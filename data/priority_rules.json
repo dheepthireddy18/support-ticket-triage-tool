@@ -9,6 +9,7 @@
   },
   "keywords": [
     {"keyword": "outage",          "score": 90, "min_level": "HIGH"},
+    {"keyword": "security",        "score": 90, "min_level": "HIGH"},
     {"keyword": "urgent",          "score": 80},
     {"keyword": "locked out",      "score": 80},
     {"keyword": "payment failed",  "score": 70},

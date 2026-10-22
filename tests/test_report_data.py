@@ -148,6 +148,17 @@ def test_waiting_buckets_cover_every_ticket_even_beyond_top_n(conn, add_ticket):
     }
 
 
+def test_waiting_buckets_leave_out_resolved_tickets(conn, add_ticket):
+    add_ticket("open", "2026-10-17T09:00:00Z", "LOW")
+    add_ticket("closed", "2026-10-17T09:00:00Z", "LOW")
+    conn.execute("UPDATE tickets SET resolved_at = '2026-10-18T09:00:00Z' WHERE id = 'closed'")
+    conn.commit()
+
+    data = build_report_data(conn, NOW)
+
+    assert sum(data.waiting_buckets.values()) == data.total_tickets == 1
+
+
 def test_huge_top_n_returns_everything_instead_of_overflowing(conn, add_ticket):
     add_ticket("a", "2026-10-19T08:00:00Z", "HIGH")
 

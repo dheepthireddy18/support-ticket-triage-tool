@@ -71,7 +71,7 @@ def test_each_rule_reason_is_saved(workdir):
     assert [row["rule_name"] for row in rows] == ["keyword", "repeat_contact", "waiting_time"]
 
 
-def test_rerun_does_not_duplicate_or_rescore(workdir, capsys):
+def test_rerun_rescores_without_duplicating_tickets(workdir, capsys):
     run(workdir)
     capsys.readouterr()
 
@@ -79,7 +79,64 @@ def test_rerun_does_not_duplicate_or_rescore(workdir, capsys):
 
     out = capsys.readouterr().out
     assert "Stored 0 new ticket(s), skipped 3. 5 prioritized ticket(s)." in out
-    assert query(workdir, "SELECT COUNT(*) AS n FROM ticket_rule_results")[0]["n"] == 15
+    assert query(workdir, "SELECT COUNT(*) AS n FROM tickets")[0]["n"] == 5
+    # Each run adds every open ticket's reasons to the history: 5 tickets x 3 rules x 2 runs.
+    assert query(workdir, "SELECT COUNT(*) AS n FROM ticket_rule_results")[0]["n"] == 30
+
+
+def test_resolve_prints_previous_level_and_keeps_status(workdir, capsys):
+    run(workdir)
+    capsys.readouterr()
+
+    code = ticket_triage_cli.main(["--db", str(workdir / "t.db"), "--resolve", OUTAGE_ID])
+
+    assert code == 0
+    assert capsys.readouterr().out.strip() == f"Resolved ticket {OUTAGE_ID} (was HIGH)."
+    row = query(workdir, f"SELECT status, resolved_at FROM tickets WHERE id = '{OUTAGE_ID}'")[0]
+    assert row["status"] == "PROCESSED"
+    assert row["resolved_at"] is not None
+
+
+def test_resolved_ticket_is_not_rescored_or_reported(workdir):
+    run(workdir)
+    ticket_triage_cli.main(["--db", str(workdir / "t.db"), "--resolve", OUTAGE_ID])
+
+    run(workdir)
+
+    rows = query(workdir, f"SELECT COUNT(*) AS n FROM ticket_rule_results WHERE ticket_id = '{OUTAGE_ID}'")
+    assert rows[0]["n"] == 3  # Only the first run's reasons
+    report = (workdir / "reports" / "daily_summary.txt").read_text(encoding="utf-8")
+    assert OUTAGE_ID not in report
+    assert "Total tickets: 4" in report  # The report covers open tickets only
+
+
+def test_resolve_twice_still_succeeds(workdir, capsys):
+    run(workdir)
+    ticket_triage_cli.main(["--db", str(workdir / "t.db"), "--resolve", OUTAGE_ID])
+    capsys.readouterr()
+
+    code = ticket_triage_cli.main(["--db", str(workdir / "t.db"), "--resolve", OUTAGE_ID])
+
+    assert code == 0
+    assert "already resolved" in capsys.readouterr().out
+
+
+def test_resolve_unknown_id_fails(workdir, capsys):
+    run(workdir)
+    capsys.readouterr()
+
+    code = ticket_triage_cli.main(["--db", str(workdir / "t.db"), "--resolve", "no-such-id"])
+
+    assert code == 1
+    assert "error: no ticket with id no-such-id" in capsys.readouterr().err
+
+
+def test_resolve_cannot_be_combined_with_input(capsys):
+    with pytest.raises(SystemExit) as exc:
+        ticket_triage_cli.main(["--input", "sample_tickets.json", "--resolve", OUTAGE_ID])
+
+    assert exc.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
 
 
 def test_rules_file_changes_the_result(workdir):

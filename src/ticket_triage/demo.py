@@ -2,9 +2,9 @@
 Seed a demo database with dummy tickets so the report has real output to show.
 
 The tickets are dated relative to `now`, so waiting times always look sensible.
-They include a tie on created_at, more HIGH tickets than the default --top, and
-two rejected records. Priorities are written directly (as if the rules had
-already run), so every ticket is PROCESSED and no ticket is unclassified.
+They include a tie on created_at and two rejected records. Tickets are stored
+unscored (PENDING), like intake leaves them; the tool's next run scores them
+with the real priority rules, and later runs re-score them as they wait.
 
 The seeder resets the database it writes to, so it refuses to touch a database
 that holds tickets other than demo tickets unless --force is given.
@@ -27,28 +27,29 @@ from ticket_triage.models import (
     PRIORITY_HIGH,
     PRIORITY_LOW,
     PRIORITY_MEDIUM,
-    STATUS_PROCESSED,
+    STATUS_PENDING,
     RejectedRecord,
     Ticket,
 )
 
 DEMO_DB_PATH = Path("data/demo.db")
 
-# (id, customer, subject, priority, age before now).
-# demo-002 and demo-003 share an age on purpose, to show the id tie-break.
+# (id, customer, subject, level the default rules give it when scored at `now`,
+# age before now). demo-002 and demo-003 share an age on purpose, to show the id
+# tie-break.
 DEMO_TICKETS = (
     ("demo-001", "ACME", "Production outage: orders failing", PRIORITY_HIGH, timedelta(days=2, hours=3)),
-    ("demo-002", "GLOBEX", "Cannot log in after password reset", PRIORITY_HIGH, timedelta(days=1, hours=6)),
-    ("demo-003", "INITECH", "Customer charged twice", PRIORITY_HIGH, timedelta(days=1, hours=6)),
-    ("demo-004", "UMBRELLA", "Data export shows wrong totals", PRIORITY_HIGH, timedelta(hours=5)),
+    ("demo-002", "GLOBEX", "Cannot log in after password reset", PRIORITY_MEDIUM, timedelta(days=1, hours=6)),
+    ("demo-003", "INITECH", "Customer charged twice", PRIORITY_LOW, timedelta(days=1, hours=6)),
+    ("demo-004", "UMBRELLA", "Data export shows wrong totals", PRIORITY_LOW, timedelta(hours=5)),
     ("demo-005", "ACME", "Security alert on admin account", PRIORITY_HIGH, timedelta(hours=1)),
-    ("demo-006", "HOOLI", "API rate limit reached", PRIORITY_HIGH, timedelta(minutes=20)),
+    ("demo-006", "HOOLI", "API rate limit reached", PRIORITY_LOW, timedelta(minutes=20)),
     ("demo-007", "GLOBEX", "Invoice PDF will not download", PRIORITY_MEDIUM, timedelta(days=3)),
-    ("demo-008", "INITECH", "Slow dashboard loading", PRIORITY_MEDIUM, timedelta(days=1)),
-    ("demo-009", "UMBRELLA", "Update billing address", PRIORITY_MEDIUM, timedelta(hours=8)),
+    ("demo-008", "INITECH", "Slow dashboard loading", PRIORITY_LOW, timedelta(days=1)),
+    ("demo-009", "UMBRELLA", "Update billing address", PRIORITY_LOW, timedelta(hours=8)),
     ("demo-010", "HOOLI", "Feature request: dark mode", PRIORITY_LOW, timedelta(days=6)),
     ("demo-011", "ACME", "Question about the API docs", PRIORITY_LOW, timedelta(days=4)),
-    ("demo-012", "GLOBEX", "Typo on the pricing page", PRIORITY_LOW, timedelta(days=2)),
+    ("demo-012", "GLOBEX", "Typo on the pricing page", PRIORITY_MEDIUM, timedelta(days=2)),
 )
 
 DEMO_REJECTED = (
@@ -61,7 +62,7 @@ def seed_demo_db(conn: sqlite3.Connection, now: datetime) -> None:
     """Insert the demo tickets and rejected records, dated relative to `now`."""
     stamp = now.isoformat()
     with conn:
-        for ticket_id, customer, subject, priority, age in DEMO_TICKETS:
+        for ticket_id, customer, subject, _level, age in DEMO_TICKETS:
             ticket = Ticket(
                 id=ticket_id,
                 subject=subject,
@@ -69,9 +70,7 @@ def seed_demo_db(conn: sqlite3.Connection, now: datetime) -> None:
                 customer=customer,
                 created_at=(now - age).isoformat(),
                 inserted_at=stamp,
-                status=STATUS_PROCESSED,
-                priority_level=priority,
-                classified_at=stamp,
+                status=STATUS_PENDING,  # Scored by the tool's next run
             )
             conn.execute(
                 "INSERT INTO tickets (id, content_hash, subject, body, customer, "

@@ -1,8 +1,10 @@
 """
 Command-line entry point for the Support Ticket Triage Tool.
 The tool runs three stages in order: load tickets into SQLite (when --input is
-given), prioritize every ticket still waiting for a priority, and write the daily
-report from the database, as text or (optionally) PDF, and can email it.
+given), re-score every open ticket against the current time (so tickets grow more
+urgent the longer they wait), and write the daily report from the database, as text
+or (optionally) PDF, and can email it.
+`--resolve TICKET_ID` closes a ticket so later runs stop re-scoring it.
 """
 
 import argparse
@@ -26,7 +28,7 @@ from ticket_triage.priority.config import (
     build_engine,
     load_config,
 )
-from ticket_triage.priority.repository import prioritize_pending
+from ticket_triage.priority.repository import ResolveOutcome, prioritize_open, resolve_ticket
 from ticket_triage.readers import FileReadError
 from ticket_triage.report import (
     DEFAULT_TOP_N,
@@ -101,13 +103,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=str(DEFAULT_DB_PATH),
         help=f"Path to SQLite database file (default: {DEFAULT_DB_PATH}).",
     )
-    parser.add_argument(
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument(
         "--input",
         type=file_name,
         help=(
             f"Name of the tickets file (CSV or JSON) inside {DATA_DIR}/. "
             "Optional: without it, the report is built from the tickets already in the database."
         ),
+    )
+    action.add_argument(
+        "--resolve",
+        metavar="TICKET_ID",
+        help="Mark one ticket as resolved so it is no longer re-scored or reported, then exit.",
     )
     parser.add_argument(
         "--output",
@@ -150,6 +158,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def run_resolve(db_path: str, ticket_id: str) -> int:
+    """Resolve one ticket. Exit code 0 if resolved (or already resolved), 1 if unknown."""
+    conn = init_db(db_path=db_path)
+    try:
+        outcome, ticket = resolve_ticket(conn, ticket_id, utc_now())
+    finally:
+        conn.close()
+    if outcome is ResolveOutcome.NOT_FOUND:
+        print(f"error: no ticket with id {ticket_id}", file=sys.stderr)
+        return 1
+    if outcome is ResolveOutcome.ALREADY_RESOLVED:
+        print(f"Ticket {ticket_id} is already resolved.")
+        return 0
+    print(f"Resolved ticket {ticket_id} (was {ticket.priority_level or 'unprioritized'}).")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the full pipeline. Returns a process exit code."""
     parser = build_parser()
@@ -168,6 +193,9 @@ def main(argv: list[str] | None = None) -> int:
             f"{inserted} valid ticket(s) inserted, {rejected} rejected."
         )
         return 0
+
+    if args.resolve:
+        return run_resolve(args.db, args.resolve)
 
     # Fail before touching the database if PDF output cannot work.
     if args.format == "pdf":
@@ -227,10 +255,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"error: could not read {input_path}: {exc}", file=sys.stderr)
                 return 2
 
-        # Always score tickets still waiting for a priority, then report from the
-        # database. One shared "now" keeps the scoring and the report consistent.
+        # Re-score every open ticket, then report from the database. One shared
+        # "now" keeps the scoring and the report consistent.
         now = utc_now()
-        prioritize_pending(conn, engine, now)
+        prioritize_open(conn, engine, now)
         data = build_report_data(conn, now, args.top)
     finally:
         conn.close()

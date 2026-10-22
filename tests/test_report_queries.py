@@ -145,6 +145,14 @@ class TestCountByAge:
 
         assert count_by_age(conn, self.NOW)["1-3 days"] == 3
 
+    def test_resolved_tickets_are_not_counted(self, conn, add_ticket):
+        self.add_aged(add_ticket, "open", timedelta(days=2))
+        self.add_aged(add_ticket, "closed", timedelta(days=2))
+        conn.execute("UPDATE tickets SET resolved_at = ? WHERE id = 'closed'", (self.NOW.isoformat(),))
+        conn.commit()
+
+        assert count_by_age(conn, self.NOW)["1-3 days"] == 1
+
     def test_unreadable_created_at_is_not_counted(self, conn, add_ticket):
         add_ticket("bad", "not a date")
         self.add_aged(add_ticket, "ok", timedelta(hours=1))
@@ -152,3 +160,30 @@ class TestCountByAge:
         counts = count_by_age(conn, self.NOW)
 
         assert sum(counts.values()) == 1
+
+
+class TestResolvedTicketsAreLeftOut:
+    """Resolved tickets (resolved_at set) leave every part of the report."""
+
+    @pytest.fixture
+    def with_resolved(self, seeded):
+        seeded.execute(
+            "UPDATE tickets SET resolved_at = '2026-10-20T10:00:00Z' WHERE id IN ('a', 'e', 'f')"
+        )
+        seeded.commit()
+        return seeded
+
+    def test_counts_by_priority(self, with_resolved):
+        assert count_by_priority(with_resolved) == {"HIGH": 2, "MEDIUM": 1, "LOW": 0}
+
+    def test_unclassified(self, with_resolved):
+        assert count_unclassified(with_resolved) == 0
+
+    def test_top_urgent(self, with_resolved):
+        assert [t.id for t in fetch_top_urgent(with_resolved, 5)] == ["b", "c"]
+
+    def test_longest_waiting(self, with_resolved):
+        assert [t.id for t in fetch_longest_waiting(with_resolved, 5)] == ["d", "b", "c"]
+
+    def test_rejected_records_are_unaffected(self, with_resolved):
+        assert count_rejected(with_resolved) == 2

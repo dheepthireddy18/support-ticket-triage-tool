@@ -84,7 +84,7 @@ def test_cli_reports_from_a_seeded_database(tmp_path):
 
     try:
         result = run_tool(
-            "--db", str(db_path), "--output", report_path.name, "--top", "3"
+            "--db", str(db_path), "--output", report_path.name, "--top", "1"
         )
 
         assert result.returncode == 0, result.stderr
@@ -92,15 +92,15 @@ def test_cli_reports_from_a_seeded_database(tmp_path):
     finally:
         report_path.unlink(missing_ok=True)
 
-    # Header and counts come from the whole database.
+    # The demo is stored unscored; this run scores it with the real rules.
     assert "Total tickets: 12" in report
     assert "Rejected records: 2" in report
-    assert "HIGH: 6" in report
+    assert "HIGH: 2" in report
+    assert "MEDIUM: 3" in report
+    assert "LOW: 7" in report
     assert "Unclassified" not in report
-    # --top 3 lists the three oldest HIGH tickets; the 4th and 5th are left out.
-    for ticket_id in ("demo-001", "demo-002", "demo-003"):
-        assert ticket_id in report
-    assert "demo-004" not in report
+    # --top 1 lists only the oldest HIGH ticket (the outage), not the security alert.
+    assert "demo-001" in report
     assert "demo-005" not in report
 
 

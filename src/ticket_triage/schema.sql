@@ -11,8 +11,9 @@ CREATE TABLE IF NOT EXISTS tickets (
     inserted_at TEXT NOT NULL,           -- Timestamp when record was ingested into DB
     status TEXT NOT NULL DEFAULT 'PENDING',  -- 'PENDING', 'PROCESSING', 'PROCESSED'
     priority_level TEXT,                 -- 'HIGH', 'MEDIUM', 'LOW'
-    classified_at TEXT,                  -- Timestamp when priority was assigned
-    metadata TEXT                        -- JSON string of extra unmapped columns
+    classified_at TEXT,                  -- Timestamp when priority was last assigned
+    metadata TEXT,                       -- JSON string of extra unmapped columns
+    resolved_at TEXT                     -- When support closed the ticket (NULL = still open)
 );
 
 CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status);

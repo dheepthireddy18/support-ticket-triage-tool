@@ -70,6 +70,8 @@ class TriageContext:
     now: datetime
     # created_at of every stored ticket, grouped by customer (includes the ticket being scored)
     customer_history: Mapping[str, Sequence[datetime]] = field(default_factory=dict)
+    # Earlier results of score_once rules, keyed by (ticket_id, rule_name)
+    saved_results: Mapping[tuple[str, str], RuleResult] = field(default_factory=dict)
 
 
 class PriorityRule(ABC):
@@ -81,6 +83,10 @@ class PriorityRule(ABC):
     """
 
     name: ClassVar[str]
+    # True for rules whose answer doesn't change over time but is costly to get
+    # (e.g. a paid API call). The engine reuses a ticket's saved score from an
+    # earlier run instead of evaluating the rule again.
+    score_once: ClassVar[bool] = False
 
     def __init__(self, weight: float = 1.0, enabled: bool = True) -> None:
         if weight < 0:
