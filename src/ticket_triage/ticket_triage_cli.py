@@ -1,29 +1,35 @@
 """
 Command-line entry point for the Support Ticket Triage Tool.
-The tool runs three stages in order: load tickets, prioritize them, and write
-a daily report. Each stage is a small function so the real intake and report
-modules can replace the temporary stand-ins below one at a time.
+The tool runs three stages in order: load tickets into SQLite (when --input is
+given), prioritize every ticket still waiting for a priority, and write the daily
+report from the database.
 """
 
 import argparse
 import json
 import sqlite3
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 from ticket_triage.db import DEFAULT_DB_PATH, init_db, seed_db
 from ticket_triage.intake import ingest_tickets_file
 from ticket_triage.models import Ticket
-from ticket_triage.readers import FileReadError
+from ticket_triage.priority.base import utc_now
 from ticket_triage.priority.config import (
     DEFAULT_RULES_FILE,
     PriorityConfig,
     build_engine,
     load_config,
 )
-from ticket_triage.priority.engine import PriorityEngine
-from ticket_triage.priority.repository import fetch_prioritized, prioritize_pending
+from ticket_triage.priority.repository import prioritize_pending
+from ticket_triage.readers import FileReadError
+from ticket_triage.report import (
+    DEFAULT_TOP_N,
+    build_report_data,
+    render_report,
+    write_report,
+)
+
 
 def load_rules() -> PriorityConfig:
     """
@@ -40,25 +46,6 @@ def load_rules() -> PriorityConfig:
         raise ValueError(f"invalid priority rules in {path}: {exc}") from exc
 
 
-def prioritize(conn: sqlite3.Connection, engine: PriorityEngine) -> list[tuple[dict, str]]:
-    """Give every PENDING ticket a priority, then return all prioritized tickets."""
-    prioritize_pending(conn, engine, datetime.now(timezone.utc))
-    return [(ticket.to_dict(), ticket.priority_level) for ticket in fetch_prioritized(conn)]
-
-
-def build_report(prioritized: list[tuple[dict, str]]) -> str:
-    """Build a plain-text report (stand-in for the real report builder)."""
-    lines = [
-        "Daily Support Ticket Summary",
-        f"Generated: {datetime.now().isoformat(timespec='seconds')}",
-        f"Total tickets: {len(prioritized)}",
-        "",
-    ]
-    for ticket, priority in prioritized:
-        lines.append(f"[{priority}] {ticket.get('id', '?')} - {ticket.get('subject', '')}")
-    return "\n".join(lines) + "\n"
-
-
 # --- CLI ---------------------------------------------------------------------
 
 DATA_DIR = Path("data")
@@ -72,6 +59,17 @@ def file_name(value: str) -> str:
             f"'{value}' must be a file name only, not a path"
         )
     return value
+
+
+def positive_int(value: str) -> int:
+    """argparse type: a whole number that is 1 or more."""
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"'{value}' is not a whole number")
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"'{value}' must be 1 or more")
+    return number
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -97,13 +95,26 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--input",
         type=file_name,
-        help=f"Name of the tickets file (CSV or JSON) inside {DATA_DIR}/.",
+        help=(
+            f"Name of the tickets file (CSV or JSON) inside {DATA_DIR}/. "
+            "Optional: without it, the report is built from the tickets already in the database."
+        ),
     )
     parser.add_argument(
         "--output",
         default="daily_summary.txt",
         type=file_name,
         help=f"Name of the report file, saved inside {REPORTS_DIR}/.",
+    )
+    parser.add_argument(
+        "--top",
+        type=positive_int,
+        default=DEFAULT_TOP_N,
+        metavar="N",
+        help=(
+            "How many tickets to list under 'Needs attention first' and "
+            f"'Waiting longest' (default: {DEFAULT_TOP_N})."
+        ),
     )
     return parser
 
@@ -127,13 +138,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
-    if not args.input:
-        parser.error("the following arguments are required: --input")
-
-    input_path = DATA_DIR / args.input
     output_path = REPORTS_DIR / args.output
 
-    if not input_path.is_file():
+    input_path = DATA_DIR / args.input if args.input else None
+    if input_path is not None and not input_path.is_file():
         print(f"error: input file not found: {input_path}", file=sys.stderr)
         return 2
 
@@ -145,26 +153,52 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     # Automatically ensure SQLite database and schema exist on startup
-    conn = init_db(db_path=args.db)
+    db_is_new = args.db != ":memory:" and not Path(args.db).exists()
     try:
-        try:
-            ingest_result = ingest_tickets_file(conn, input_path)
-        except (FileReadError, json.JSONDecodeError, OSError) as exc:
-            print(f"error: could not read {input_path}: {exc}", file=sys.stderr)
-            return 2
+        conn = init_db(db_path=args.db)
+    except sqlite3.Error as exc:
+        print(f"error: could not open database {args.db}: {exc}", file=sys.stderr)
+        return 2
 
-        prioritized = prioritize(conn, engine)
+    if db_is_new and input_path is None:
+        # Most likely a mistyped --db: say so instead of reporting an empty day silently.
+        print(
+            f"note: {args.db} did not exist, so an empty database was created. "
+            "Use --input to load tickets.",
+            file=sys.stderr,
+        )
+
+    ingest_result = None
+    try:
+        if input_path is not None:
+            try:
+                ingest_result = ingest_tickets_file(conn, input_path)
+            except (FileReadError, json.JSONDecodeError, OSError) as exc:
+                print(f"error: could not read {input_path}: {exc}", file=sys.stderr)
+                return 2
+
+        # Always score tickets still waiting for a priority, then report from the
+        # database. One shared "now" keeps the scoring and the report consistent.
+        now = utc_now()
+        prioritize_pending(conn, engine, now)
+        data = build_report_data(conn, now, args.top)
     finally:
         conn.close()
 
-    report = build_report(prioritized)
+    try:
+        write_report(render_report(data), output_path)
+    except OSError as exc:
+        print(f"error: could not write the report to {output_path}: {exc}", file=sys.stderr)
+        return 2
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(report, encoding="utf-8")
-
-    print(
+    loaded = (
         f"Stored {ingest_result.inserted} new ticket(s), skipped {ingest_result.rejected}. "
-        f"{len(prioritized)} prioritized ticket(s). Report saved to {output_path}"
+        if ingest_result is not None
+        else ""
+    )
+    print(
+        f"{loaded}{sum(data.counts_by_priority.values())} prioritized ticket(s). "
+        f"Report saved to {output_path}"
     )
     return 0
 
