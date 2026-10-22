@@ -58,9 +58,10 @@ class ReportData:
 # --- Database queries ---------------------------------------------------------
 
 
-# TODO(after Natalie's rules are merged): tickets can then be RESOLVED. Exclude
-# STATUS_RESOLVED tickets from every query below (counts, urgent, longest
-# waiting, unclassified) and add tests for it.
+# TODO(if Natalie's RESOLVED status lands; her escalation work is not merged yet):
+# exclude resolved tickets from every query below (counts, urgent, longest
+# waiting, unclassified), decide whether "Total tickets" becomes "Open tickets",
+# and add tests for it.
 def count_by_priority(conn: sqlite3.Connection) -> dict[str, int]:
     """
     Count tickets per priority level.

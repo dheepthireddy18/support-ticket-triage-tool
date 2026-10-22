@@ -62,7 +62,7 @@ Give file names only, not paths. The input file is read from the `data/` folder 
 |--------|-------------|
 | `--input FILE` | Tickets file inside `data/`. Optional: without it, the report is built from the tickets already in the database. |
 | `--output FILE` | Report file name inside `reports/` (default `daily_summary.txt`). |
-| `--top N` | How many tickets to list under "Needs attention first" and "Waiting longest" (default `5`, `0` or more). The totals and counts always cover every ticket. |
+| `--top N` | How many tickets to list under "Needs attention first" and "Waiting longest" (default `5`, `1` or more). The totals and counts always cover every ticket. |
 | `--db PATH` | SQLite database file (default `data/tickets.db`). |
 | `--init-db` | Create the database tables and exit. |
 
@@ -77,7 +77,7 @@ The report is plain text, laid out so a support manager can read it top to botto
 ```
 Daily Support Ticket Summary
 Date: 2026-10-19 12:00 UTC
-Total tickets: 13
+Total tickets: 12
 Rejected records: 2
 
 Needs attention first
@@ -90,7 +90,6 @@ Counts by priority
   HIGH: 6
   MEDIUM: 3
   LOW: 3
-  Unclassified: 1
 
 Waiting longest
 ---------------
@@ -100,7 +99,7 @@ Waiting longest
 
 1. **Header**: the date, the total number of tickets and how many records were rejected.
 2. **Needs attention first**: HIGH priority tickets, oldest first. This is what a manager should act on first. It shows "No urgent tickets today" when there are none.
-3. **Counts by priority**: HIGH, MEDIUM and LOW. An "Unclassified: N" line appears only when some tickets have no priority yet.
+3. **Counts by priority**: HIGH, MEDIUM and LOW. An "Unclassified: N" line appears only if some tickets have no priority yet (for example if a run stopped before they were scored).
 4. **Waiting longest**: the oldest tickets of any priority, so nothing is forgotten.
 
 Each ticket row shows the id, customer, subject, priority and how long the ticket has been waiting (for example `2d 3h`, `5h 12m`). Sections are never left blank.
@@ -114,7 +113,80 @@ python -m ticket_triage.demo                  # creates data/demo.db (reset each
 python -m ticket_triage --db data/demo.db     # report from the demo database
 ```
 
-The demo data includes more HIGH tickets than the default `--top`, a tie on creation time, one unclassified ticket and two rejected records.
+The demo data has 12 tickets, with more HIGH tickets than the default `--top` and a tie on creation time, plus two rejected records. Its priorities are written directly, not scored by the rules, so it has no entries in `ticket_rule_results`.
+
+## Priority Rules
+
+Each valid ticket is scored from 0 to 100 by three rules (plus two optional model-based rules, below), and the scores are combined into a level: `HIGH`, `MEDIUM` or `LOW`. Each ticket is scored once, the first time the tool sees it: its level goes into the ticket's `priority_level` column, and every rule's score and reason goes into the `ticket_rule_results` table, so you can always see why a ticket got its level:
+
+```
+sqlite3 data/tickets.db "SELECT rule_name, score, reason FROM ticket_rule_results WHERE ticket_id = '<id>';"
+```
+
+| Rule | What it looks at |
+|---|---|
+| `keyword` | Urgent words in the subject or body. The highest-scoring match wins, and a keyword can set a minimum level (e.g. `outage` is always at least HIGH). |
+| `repeat_contact` | How many tickets the same customer sent in the 7 days up to this one |
+| `waiting_time` | Hours since `created_at`, reaching 100 at 72 hours |
+| `llm_urgency` | Optional, off by default: Claude rates the urgency (see below) |
+| `jev_urgency` | Optional, off by default: TypeSafe's Jev decision model places the ticket on an urgency rubric (see below) |
+
+The score is the weighted average of the rules. A score of 70 or more is HIGH, 40 or more is MEDIUM, and anything lower is LOW. When rules disagree, the weights decide, except that a keyword's minimum level always wins.
+
+### Changing the rules without editing code
+
+All settings live in `data/priority_rules.json`, which is tracked in Git, so every rule change shows up in a diff:
+
+| Section | What it controls |
+|---|---|
+| `thresholds` | The scores for `high` (default 70) and `medium` (default 40) |
+| `rules` | Each rule's `enabled`, `weight` and `params` |
+| `keywords` | The keyword list: each entry has a `keyword`, a `score` and an optional `min_level` |
+
+Anything you leave out keeps its built-in default. A `keywords` list replaces the whole keyword list. An invalid file (an unknown rule, a negative weight, a score outside 0–100, a value of the wrong type) is rejected with a message naming the problem.
+
+### Adding a new rule
+
+1. Subclass `PriorityRule` in `src/ticket_triage/priority/`, give it a unique `name`, and implement `evaluate(ticket, ctx)` so it returns `self.result(score, reason)`.
+2. Register it in `RULE_BUILDERS` and `DEFAULT_RULE_SETTINGS` in `priority/config.py`, and add an entry for it under `rules` in `data/priority_rules.json`.
+
+### Optional LLM rule
+
+The `llm_urgency` rule asks Claude to rate each ticket's urgency from 0 to 100, with a one-sentence reason. It uses the class Azure sandbox.
+
+1. Install the extra packages:
+
+   ```
+   pip install -e ".[llm]"
+   ```
+
+2. Copy `.env.example` to `.env` in the project folder and fill in the three values your instructor gave you. `.env` is in `.gitignore`, so Git never sees it. Put one setting on each line, with no quotes or spaces:
+
+   ```
+   AZURE_AI_KEY=<your key>
+   AZURE_AI_ENDPOINT=<the endpoint>
+   AZURE_AI_DEPLOYMENT=<the deployment name>
+   ```
+
+   The endpoint is the base address only, without `/openai/v1` or `/anthropic`; the tool adds `/anthropic/v1/messages` itself. The deployment name is used as the model. If no `AZURE_AI_*` settings are present, the rule uses `ANTHROPIC_API_KEY` with Anthropic's own API instead. Values already set in your shell win over `.env`.
+
+3. Turn the rule on by setting `"enabled": true` under `llm_urgency` in `data/priority_rules.json`.
+
+The tool still works without a key or the extra packages. The rule just gives no score, so the other rules decide, and its reason in `ticket_rule_results` says why (for example `incomplete Azure settings, missing AZURE_AI_ENDPOINT`). The rule makes one API call per new ticket, and the class account is shared, so keep it off for large ticket files.
+
+### Optional Jev decision-model rule
+
+The `jev_urgency` rule asks [TypeSafe's Jev](https://docs.typesafe.ai) where the ticket sits on a five-level urgency rubric, from "Can wait" to "Critical". Jev doesn't write text: it returns the ticket's position on the rubric (0 to 4, possibly in between) and how confident it is, and the rule turns that position into 0–100 (for example, 3.0 becomes 75). The rubric is in `URGENCY_LEVELS` in `priority/jev_rule.py`.
+
+1. Add your key to `.env` (see `.env.example`):
+
+   ```
+   TYPESAFE_API_KEY=<your key>
+   ```
+
+2. Turn the rule on by setting `"enabled": true` under `jev_urgency` in `data/priority_rules.json`. Optional `params`: `min_confidence` (0–1; below it the rule gives no score and the other rules decide), `model` (default `jev-latest`) and `timeout_seconds`.
+
+It needs no extra packages, but install `pip install -e ".[llm]"` anyway if you're on a Mac with Python from python.org: it adds `truststore`, which lets Python check HTTPS certificates using the Mac's keychain. Without it, calls fail with `CERTIFICATE_VERIFY_FAILED` (as does any Python HTTPS call) until you run "Install Certificates.command" from the Python folder in Applications. Like the Claude rule, it gives no score if the key is missing or a call fails, and its reason in `ticket_rule_results` says why. It can run alongside `llm_urgency`, each with its own weight.
 
 ## Running the Tests
 

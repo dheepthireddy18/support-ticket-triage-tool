@@ -14,9 +14,9 @@ def test_seeded_database_has_every_report_case(conn):
 
     data = build_report_data(conn, NOW)
 
-    assert data.total_tickets == len(DEMO_TICKETS) == 13
+    assert data.total_tickets == len(DEMO_TICKETS) == 12
     assert data.counts_by_priority == {"HIGH": 6, "MEDIUM": 3, "LOW": 3}
-    assert data.unclassified_count == 1
+    assert data.unclassified_count == 0  # priorities are seeded directly
     assert data.rejected_count == 2
 
 

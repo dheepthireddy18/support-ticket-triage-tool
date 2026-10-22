@@ -2,8 +2,9 @@
 Seed a demo database with dummy tickets so the report has real output to show.
 
 The tickets are dated relative to `now`, so waiting times always look sensible.
-They include a tie on created_at, more HIGH tickets than the default --top, one
-unclassified ticket and two rejected records.
+They include a tie on created_at, more HIGH tickets than the default --top, and
+two rejected records. Priorities are written directly (as if the rules had
+already run), so every ticket is PROCESSED and no ticket is unclassified.
 
 Usage:
     python -m ticket_triage.demo                  # writes data/demo.db
@@ -22,13 +23,14 @@ from ticket_triage.models import (
     PRIORITY_HIGH,
     PRIORITY_LOW,
     PRIORITY_MEDIUM,
+    STATUS_PROCESSED,
     RejectedRecord,
     Ticket,
 )
 
 DEMO_DB_PATH = Path("data/demo.db")
 
-# (id, customer, subject, priority, age before now). None priority = unclassified.
+# (id, customer, subject, priority, age before now).
 # demo-002 and demo-003 share an age on purpose, to show the id tie-break.
 DEMO_TICKETS = (
     ("demo-001", "ACME", "Production outage: orders failing", PRIORITY_HIGH, timedelta(days=2, hours=3)),
@@ -43,7 +45,6 @@ DEMO_TICKETS = (
     ("demo-010", "HOOLI", "Feature request: dark mode", PRIORITY_LOW, timedelta(days=6)),
     ("demo-011", "ACME", "Question about the API docs", PRIORITY_LOW, timedelta(days=4)),
     ("demo-012", "GLOBEX", "Typo on the pricing page", PRIORITY_LOW, timedelta(days=2)),
-    ("demo-013", "INITECH", "New ticket, not triaged yet", None, timedelta(minutes=10)),
 )
 
 DEMO_REJECTED = (
@@ -52,10 +53,9 @@ DEMO_REJECTED = (
 )
 
 
-# TODO(after the schema from Natalie's branch is merged): re-run the demo tests.
-# tickets gains priority_score, escalation_count, last_escalated_at and
-# resolved_at; the INSERT below names its columns, so it should still work, but
-# consider setting priority_score and adding a RESOLVED demo ticket.
+# TODO(if Natalie's escalation work lands): its new tickets columns and RESOLVED
+# status must not break the INSERT below (it names its columns, so adding columns
+# is safe). Re-run the demo tests and consider a RESOLVED demo ticket.
 def seed_demo_db(conn: sqlite3.Connection, now: datetime) -> None:
     """Insert the demo tickets and rejected records, dated relative to `now`."""
     stamp = now.isoformat()
@@ -68,9 +68,9 @@ def seed_demo_db(conn: sqlite3.Connection, now: datetime) -> None:
                 customer=customer,
                 created_at=(now - age).isoformat(),
                 inserted_at=stamp,
-                status="PROCESSED" if priority else "PENDING",
+                status=STATUS_PROCESSED,
                 priority_level=priority,
-                classified_at=stamp if priority else None,
+                classified_at=stamp,
             )
             conn.execute(
                 "INSERT INTO tickets (id, content_hash, subject, body, customer, "
