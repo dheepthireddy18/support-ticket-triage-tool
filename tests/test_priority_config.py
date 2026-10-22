@@ -29,8 +29,10 @@ def test_shipped_rules_file_loads_and_builds_all_rules():
         "keyword",
         "repeat_contact",
         "waiting_time",
+        "llm_urgency",
     ]
-    assert all(rule.enabled for rule in engine.rules)
+    # The LLM rule ships switched off, so nobody makes paid API calls without opting in.
+    assert [rule.enabled for rule in engine.rules] == [True, True, True, False]
     assert engine.high_threshold == 70
     assert engine.medium_threshold == 40
 
@@ -73,6 +75,26 @@ def test_keywords_replace_the_whole_list(tmp_path):
     assert [kw.phrase for kw in keyword_rule.keywords] == ["refund"]
 
 
+def test_enabling_the_llm_rule(tmp_path):
+    config = load_config(write_json(tmp_path, {"rules": {"llm_urgency": {"enabled": True}}}))
+
+    llm = next(r for r in build_engine(config).rules if r.name == "llm_urgency")
+    assert llm.enabled is True
+    assert llm.model == "claude-haiku-5-5"
+
+
+def test_llm_rule_settings_from_file(tmp_path):
+    path = write_json(
+        tmp_path,
+        {"rules": {"llm_urgency": {"weight": 2, "params": {"model": "some-model", "timeout_seconds": 5}}}},
+    )
+
+    llm = next(r for r in build_engine(load_config(path)).rules if r.name == "llm_urgency")
+    assert llm.weight == 2
+    assert llm.model == "some-model"
+    assert llm.timeout_seconds == 5
+
+
 @pytest.mark.parametrize(
     "data",
     [
@@ -82,6 +104,8 @@ def test_keywords_replace_the_whole_list(tmp_path):
         {"rules": {"keyword": {"colour": "red"}}},
         {"rules": {"waiting_time": {"params": {"cap_hours": 0}}}},
         {"rules": {"waiting_time": {"params": {"not_a_param": 1}}}},
+        {"rules": {"llm_urgency": {"params": {"not_a_param": 1}}}},
+        {"rules": {"llm_urgency": {"weight": -1}}},
         {"keywords": [{"keyword": "outage", "score": 150}]},
         {"keywords": [{"keyword": "outage", "score": 90, "min_level": "SEVERE"}]},
         {"keywords": [{"keyword": "outage"}]},

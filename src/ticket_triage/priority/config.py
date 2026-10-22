@@ -50,6 +50,7 @@ DEFAULT_RULE_SETTINGS: dict[str, RuleSetting] = {
     "keyword": RuleSetting(params={"baseline": 10}),
     "repeat_contact": RuleSetting(params={"window_days": 7, "steps": {"1": 0, "2": 50, "3": 80}}),
     "waiting_time": RuleSetting(params={"cap_hours": 72}),
+    "llm_urgency": RuleSetting(enabled=False, params={"model": "claude-haiku-5-5"}),
 }
 
 DEFAULT_KEYWORDS: list[Keyword] = [
@@ -81,11 +82,19 @@ def _waiting_rule(setting: RuleSetting, keywords: list[Keyword]) -> PriorityRule
     return WaitingTimeRule(weight=setting.weight, enabled=setting.enabled, **setting.params)
 
 
+def _llm_rule(setting: RuleSetting, keywords: list[Keyword]) -> PriorityRule:
+    # Imported here so the tool never needs the LLM code (or its packages) unless asked.
+    from ticket_triage.priority.llm_rule import LLMUrgencyRule
+
+    return LLMUrgencyRule(weight=setting.weight, enabled=setting.enabled, **setting.params)
+
+
 # Every known rule, in the order the engine runs them.
 RULE_BUILDERS: dict[str, Callable[[RuleSetting, list[Keyword]], PriorityRule]] = {
     "keyword": _keyword_rule,
     "repeat_contact": _repeat_rule,
     "waiting_time": _waiting_rule,
+    "llm_urgency": _llm_rule,
 }
 
 
