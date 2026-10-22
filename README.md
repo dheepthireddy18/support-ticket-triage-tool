@@ -56,6 +56,66 @@ ticket-triage --input sample_tickets.json --output daily_summary.txt
 
 Give file names only, not paths. The input file is read from the `data/` folder and the report is saved in the `reports/` folder (created automatically if it does not exist). `--output` is optional and defaults to `daily_summary.txt`. A sample input file with five valid tickets and three invalid (missing customer, invalid date, duplicate id) is in `data/sample_tickets.json`.
 
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--input FILE` | Tickets file inside `data/`. Optional: without it, the report is built from the tickets already in the database. |
+| `--output FILE` | Report file name inside `reports/` (default `daily_summary.txt`). |
+| `--top N` | How many tickets to list under "Needs attention first" and "Waiting longest" (default `5`, `0` or more). The totals and counts always cover every ticket. |
+| `--db PATH` | SQLite database file (default `data/tickets.db`). |
+| `--init-db` | Create the database tables and exit. |
+
+```
+ticket-triage --input sample_tickets.json --top 3
+```
+
+## The Daily Report
+
+The report is plain text, laid out so a support manager can read it top to bottom:
+
+```
+Daily Support Ticket Summary
+Date: 2026-10-19 12:00 UTC
+Total tickets: 13
+Rejected records: 2
+
+Needs attention first
+---------------------
+  demo-001 | ACME | Production outage: orders failing | HIGH | waiting 2d 3h
+  ...
+
+Counts by priority
+------------------
+  HIGH: 6
+  MEDIUM: 3
+  LOW: 3
+  Unclassified: 1
+
+Waiting longest
+---------------
+  demo-010 | HOOLI | Feature request: dark mode | LOW | waiting 6d 0h
+  ...
+```
+
+1. **Header**: the date, the total number of tickets and how many records were rejected.
+2. **Needs attention first**: HIGH priority tickets, oldest first. This is what a manager should act on first. It shows "No urgent tickets today" when there are none.
+3. **Counts by priority**: HIGH, MEDIUM and LOW. An "Unclassified: N" line appears only when some tickets have no priority yet.
+4. **Waiting longest**: the oldest tickets of any priority, so nothing is forgotten.
+
+Each ticket row shows the id, customer, subject, priority and how long the ticket has been waiting (for example `2d 3h`, `5h 12m`). Sections are never left blank.
+
+### Demo data
+
+To see a full report without any input file, create a demo database and run the tool on it:
+
+```
+python -m ticket_triage.demo                  # creates data/demo.db (reset each time)
+python -m ticket_triage --db data/demo.db     # report from the demo database
+```
+
+The demo data includes more HIGH tickets than the default `--top`, a tie on creation time, one unclassified ticket and two rejected records.
+
 ## Running the Tests
 
 ```
