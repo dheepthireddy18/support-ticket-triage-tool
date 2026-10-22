@@ -77,7 +77,7 @@ class PriorityRule(ABC):
     Base class for all priority rules.
 
     To add a rule: subclass this, set a unique `name`, implement `evaluate()`,
-    and pass an instance to PriorityEngine.
+    and register it in ticket_triage.priority.config.RULE_BUILDERS.
     """
 
     name: ClassVar[str]
