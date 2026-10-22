@@ -16,7 +16,6 @@ write_report_pdf() writes the same report as a PDF; it needs the optional
 from __future__ import annotations
 
 import sqlite3
-import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -44,13 +43,15 @@ PDF_INSTALL_HINT = (
     'PDF output needs the optional "reportlab" package. '
     'Install it with: pip install -e ".[pdf]"'
 )
-# PDF page layout (points). Landscape A4 fits a ticket row with a full-length id.
-PDF_FONT = "Courier"
-PDF_BOLD_FONT = "Courier-Bold"
-PDF_FONT_SIZE = 9
-PDF_LINE_HEIGHT = 12
-PDF_MARGIN = 40
-PDF_WRAP_INDENT = " " * 6
+
+# Waiting-time buckets for the PDF chart, as (label, lower bound in days). The SQL in
+# count_by_age() uses the same bounds.
+AGE_BUCKETS = (
+    ("Under 1 day", 0),
+    ("1-3 days", 1),
+    ("3-7 days", 3),
+    ("7+ days", 7),
+)
 
 
 @dataclass(frozen=True)
@@ -72,6 +73,7 @@ class ReportData:
     top_urgent: list[ReportTicket] = field(default_factory=list)
     longest_waiting: list[ReportTicket] = field(default_factory=list)
     rejected_count: int = 0
+    waiting_buckets: dict[str, int] = field(default_factory=dict)  # Used by the PDF chart
 
 
 class PdfUnavailableError(RuntimeError):
@@ -145,6 +147,34 @@ def count_rejected(conn: sqlite3.Connection) -> int:
     return row["n"]
 
 
+def count_by_age(conn: sqlite3.Connection, now: datetime) -> dict[str, int]:
+    """
+    Count tickets per waiting-time bucket (see AGE_BUCKETS), measured at `now`.
+
+    Always returns every bucket, using 0 for an empty one. A ticket created after
+    `now` counts as "Under 1 day"; one with an unreadable created_at is not counted.
+    """
+    counts = {label: 0 for label, _ in AGE_BUCKETS}
+    rows = conn.execute(
+        """
+        SELECT CASE WHEN age < 1 THEN 0 WHEN age < 3 THEN 1 WHEN age < 7 THEN 2 ELSE 3 END
+                   AS bucket,
+               COUNT(*) AS n
+        FROM (
+            SELECT julianday(?) - julianday(created_at) AS age
+            FROM tickets
+            WHERE julianday(created_at) IS NOT NULL
+        )
+        GROUP BY bucket
+        """,
+        (now.isoformat(),),
+    )
+    labels = [label for label, _ in AGE_BUCKETS]
+    for row in rows:
+        counts[labels[row["bucket"]]] = row["n"]
+    return counts
+
+
 # --- Report assembly ----------------------------------------------------------
 
 
@@ -185,6 +215,7 @@ def build_report_data(
         top_urgent=_with_waiting(fetch_top_urgent(conn, top_n), now),
         longest_waiting=_with_waiting(fetch_longest_waiting(conn, top_n), now),
         rejected_count=count_rejected(conn),
+        waiting_buckets=count_by_age(conn, now),
     )
 
 
@@ -282,48 +313,17 @@ def require_pdf_support() -> None:
 
 def write_report_pdf(data: ReportData, path: Path | str) -> Path:
     """
-    Write the report to `path` as a PDF with the same content as render_report().
+    Write the report to `path` as a designed PDF (see ticket_triage.report_pdf).
 
-    The text is set in a monospace font on landscape A4, with titles in bold.
-    Long rows wrap onto an indented line, and extra pages are added as needed.
-    Characters the PDF font cannot show (outside Western European text) are
+    Characters the PDF fonts cannot show (outside Western European text) are
     replaced with "?". Returns the path.
 
     :raises PdfUnavailableError: if reportlab is not installed.
     """
     require_pdf_support()
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.pdfbase.pdfmetrics import stringWidth
-    from reportlab.pdfgen import canvas
+    from ticket_triage.report_pdf import build_pdf  # Imports reportlab, so only when needed
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-
-    page_width, page_height = landscape(A4)
-    top = page_height - PDF_MARGIN
-    max_chars = int(
-        (page_width - 2 * PDF_MARGIN) // stringWidth("M", PDF_FONT, PDF_FONT_SIZE)
-    )
-    bold_lines = {REPORT_TITLE, NEEDS_ATTENTION_TITLE, COUNTS_TITLE, WAITING_LONGEST_TITLE}
-
-    # pageCompression=0 keeps the text readable inside the file, so tests can find it.
-    pdf = canvas.Canvas(str(path), pagesize=(page_width, page_height), pageCompression=0)
-    pdf.setTitle(REPORT_TITLE)
-
-    y = top
-    for line in render_report(data).splitlines():
-        wrapped = textwrap.wrap(
-            line, max_chars, subsequent_indent=PDF_WRAP_INDENT, break_long_words=True
-        )
-        for chunk in wrapped or [""]:
-            if y - PDF_LINE_HEIGHT < PDF_MARGIN:
-                pdf.showPage()
-                y = top
-            pdf.setFont(
-                PDF_BOLD_FONT if line in bold_lines else PDF_FONT, PDF_FONT_SIZE
-            )
-            safe = chunk.encode("cp1252", "replace").decode("cp1252")
-            y -= PDF_LINE_HEIGHT
-            pdf.drawString(PDF_MARGIN, y, safe)
-    pdf.save()
+    build_pdf(data, path)
     return path

@@ -115,7 +115,7 @@ pip install -e ".[pdf]"
 ticket-triage --input sample_tickets.json --format pdf     # reports/daily_summary.pdf
 ```
 
-Without the package, `--format pdf` stops with a message explaining how to install it. The PDF has the same sections and empty states as the text report, in a monospace font on landscape A4. Characters outside Western European text are shown as `?`.
+Without the package, `--format pdf` stops with a message explaining how to install it. The PDF has the same sections and empty states as the text report, laid out as a designed one-page summary on US Letter: a title banner, four headline tiles (total tickets, rejected records, high priority, longest wait), two small charts (tickets by priority and by waiting time) and the three tables. Every page has a footer with the page number. Ticket ids are shortened to their first 8 characters in the tables, and characters outside Western European text are shown as `?`.
 
 ### Demo data
 
