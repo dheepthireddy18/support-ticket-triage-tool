@@ -58,7 +58,11 @@ Give file names only, not paths. The input file is read from the `data/` folder 
 
 ## Priority Rules
 
-Each valid ticket is scored from 0 to 100 by three rules, and the scores are combined into a level: `HIGH`, `MEDIUM` or `LOW`. (The rules and their settings are in place; the command-line tool starts using them in a follow-up change.)
+Each valid ticket is scored from 0 to 100 by three rules, and the scores are combined into a level: `HIGH`, `MEDIUM` or `LOW`. Each ticket is scored once, the first time the tool sees it: its level goes into the ticket's `priority_level` column, and every rule's score and reason goes into the `ticket_rule_results` table, so you can always see why a ticket got its level:
+
+```
+sqlite3 data/tickets.db "SELECT rule_name, score, reason FROM ticket_rule_results WHERE ticket_id = '<id>';"
+```
 
 | Rule | What it looks at |
 |---|---|
