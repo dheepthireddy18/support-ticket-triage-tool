@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ticket_triage.db import DEFAULT_DB_PATH, init_db
+from ticket_triage.db import DEFAULT_DB_PATH, init_db, seed_db
 from ticket_triage.intake import ingest_tickets_file
 from ticket_triage.models import Ticket
 from ticket_triage.readers import FileReadError
@@ -85,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Initialize the SQLite database tables and exit.",
     )
     parser.add_argument(
+        "--seed",
+        action="store_true",
+        help="Seed the SQLite database with data/sample_tickets.json and exit.",
+    )
+    parser.add_argument(
         "--db",
         default=str(DEFAULT_DB_PATH),
         help=f"Path to SQLite database file (default: {DEFAULT_DB_PATH}).",
@@ -112,6 +117,14 @@ def main(argv: list[str] | None = None) -> int:
         conn = init_db(db_path=args.db)
         conn.close()
         print(f"Database successfully initialized at {args.db}")
+        return 0
+
+    if args.seed:
+        inserted, rejected = seed_db(db_path=args.db)
+        print(
+            f"Database successfully seeded at {args.db}: "
+            f"{inserted} valid ticket(s) inserted, {rejected} rejected."
+        )
         return 0
 
     if not args.input:
@@ -150,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     output_path.write_text(report, encoding="utf-8")
 
     print(
-        f"Stored {ingest_result.inserted} new ticket(s), rejected {ingest_result.rejected}. "
+        f"Stored {ingest_result.inserted} new ticket(s), skipped {ingest_result.rejected}. "
         f"{len(prioritized)} prioritized ticket(s). Report saved to {output_path}"
     )
     return 0

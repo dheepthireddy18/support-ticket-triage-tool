@@ -1,6 +1,6 @@
 """Support Ticket Triage Tool package."""
 
-from ticket_triage.db import DEFAULT_DB_PATH, get_db_connection, init_db
+from ticket_triage.db import DEFAULT_DB_PATH, get_db_connection, init_db, seed_db
 from ticket_triage.intake import (
     IngestResult,
     ingest_records,
@@ -53,5 +53,6 @@ __all__ = [
     "read_csv_tickets",
     "read_json_tickets",
     "read_tickets_file",
+    "seed_db",
     "validate_record",
 ]

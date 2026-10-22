@@ -24,6 +24,7 @@ class IngestResult:
 
     inserted: int = 0
     rejected: int = 0
+    skipped_existing: int = 0
     valid_tickets: list[Ticket] = field(default_factory=list)
     rejected_records: list[RejectedRecord] = field(default_factory=list)
 
@@ -70,22 +71,26 @@ def validate_record(
 
     ticket_id = str(record["id"]).strip()
 
+    # Compute content hash
+    subject_str = str(record["subject"]).strip()
+    body_str = str(record["body"]).strip()
+    customer_str = str(record["customer"]).strip()
+    content_hash = compute_content_hash(customer_str, subject_str, body_str)
+
     # 3. In-batch duplicate ID check
     if ticket_id in seen_ids:
         return None, f"Duplicate ticket ID in batch: {ticket_id}"
 
     # 4. In-database duplicate ID check
     existing_id = conn.execute(
-        "SELECT id FROM tickets WHERE id = ?", (ticket_id,)
+        "SELECT id, content_hash FROM tickets WHERE id = ?", (ticket_id,)
     ).fetchone()
     if existing_id is not None:
+        db_hash = existing_id["content_hash"] if hasattr(existing_id, "keys") else existing_id[1]
+        if db_hash == content_hash:
+            # Identical ticket already ingested in a previous run; skip cleanly
+            return None, None
         return None, f"Duplicate ticket ID already exists in database: {ticket_id}"
-
-    # Compute content hash
-    subject_str = str(record["subject"]).strip()
-    body_str = str(record["body"]).strip()
-    customer_str = str(record["customer"]).strip()
-    content_hash = compute_content_hash(customer_str, subject_str, body_str)
 
     # 5. In-batch duplicate content hash check
     if content_hash in seen_hashes:
@@ -165,6 +170,8 @@ def ingest_records(
                 )
             result.rejected += 1
             result.rejected_records.append(rejected)
+        elif ticket is None and reason is None:
+            result.skipped_existing += 1
 
     return result
 
