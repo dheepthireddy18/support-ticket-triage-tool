@@ -79,3 +79,10 @@ class PriorityEngine:
                 level = higher_level(level, result.min_level)
 
         return PriorityResult(ticket.id, score, level, results)
+
+
+def build_default_engine() -> PriorityEngine:
+    """An engine with the built-in rules and thresholds (no rules file needed)."""
+    from ticket_triage.priority.config import build_engine, default_config
+
+    return build_engine(default_config())

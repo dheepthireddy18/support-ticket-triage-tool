@@ -4,10 +4,7 @@ import pytest
 
 from ticket_triage.models import PRIORITY_HIGH, PRIORITY_LOW, PRIORITY_MEDIUM
 from ticket_triage.priority.base import PriorityRule, TriageContext
-from ticket_triage.priority.engine import PriorityEngine
-from ticket_triage.priority.keyword_rule import Keyword, KeywordRule
-from ticket_triage.priority.repeat_rule import RepeatContactRule
-from ticket_triage.priority.waiting_rule import WaitingTimeRule
+from ticket_triage.priority.engine import PriorityEngine, build_default_engine
 
 
 class Fixed(PriorityRule):
@@ -136,23 +133,7 @@ def test_sample_tickets_get_documented_levels(sample_tickets, fixed_now):
     for ticket in sample_tickets:
         history.setdefault(ticket.customer, []).append(ticket.created_at_datetime)
     ctx = TriageContext(now=fixed_now, customer_history=history)
-    engine = PriorityEngine(
-        [
-            KeywordRule(
-                [
-                    Keyword("outage", 90, PRIORITY_HIGH),
-                    Keyword("urgent", 80),
-                    Keyword("locked out", 80),
-                    Keyword("payment failed", 70),
-                    Keyword("charged", 60),
-                    Keyword("invoice", 30),
-                    Keyword("feature request", 10),
-                ]
-            ),
-            RepeatContactRule(),
-            WaitingTimeRule(),
-        ]
-    )
+    engine = build_default_engine()
 
     levels = {t.subject: engine.score(t, ctx) for t in sample_tickets}
 
