@@ -2,8 +2,12 @@
 Seed a demo database with dummy tickets so the report has real output to show.
 
 The tickets are dated relative to `now`, so waiting times always look sensible.
-They include a tie on created_at, more HIGH tickets than the default --top, one
-unclassified ticket and two rejected records.
+They include a tie on created_at, more HIGH tickets than the default --top, and
+two rejected records. Priorities are written directly (as if the rules had
+already run), so every ticket is PROCESSED and no ticket is unclassified.
+
+The seeder resets the database it writes to, so it refuses to touch a database
+that holds tickets other than demo tickets unless --force is given.
 
 Usage:
     python -m ticket_triage.demo                  # writes data/demo.db
@@ -14,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sqlite3
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -22,13 +27,14 @@ from ticket_triage.models import (
     PRIORITY_HIGH,
     PRIORITY_LOW,
     PRIORITY_MEDIUM,
+    STATUS_PROCESSED,
     RejectedRecord,
     Ticket,
 )
 
 DEMO_DB_PATH = Path("data/demo.db")
 
-# (id, customer, subject, priority, age before now). None priority = unclassified.
+# (id, customer, subject, priority, age before now).
 # demo-002 and demo-003 share an age on purpose, to show the id tie-break.
 DEMO_TICKETS = (
     ("demo-001", "ACME", "Production outage: orders failing", PRIORITY_HIGH, timedelta(days=2, hours=3)),
@@ -43,7 +49,6 @@ DEMO_TICKETS = (
     ("demo-010", "HOOLI", "Feature request: dark mode", PRIORITY_LOW, timedelta(days=6)),
     ("demo-011", "ACME", "Question about the API docs", PRIORITY_LOW, timedelta(days=4)),
     ("demo-012", "GLOBEX", "Typo on the pricing page", PRIORITY_LOW, timedelta(days=2)),
-    ("demo-013", "INITECH", "New ticket, not triaged yet", None, timedelta(minutes=10)),
 )
 
 DEMO_REJECTED = (
@@ -52,10 +57,6 @@ DEMO_REJECTED = (
 )
 
 
-# TODO(after the schema from Natalie's branch is merged): re-run the demo tests.
-# tickets gains priority_score, escalation_count, last_escalated_at and
-# resolved_at; the INSERT below names its columns, so it should still work, but
-# consider setting priority_score and adding a RESOLVED demo ticket.
 def seed_demo_db(conn: sqlite3.Connection, now: datetime) -> None:
     """Insert the demo tickets and rejected records, dated relative to `now`."""
     stamp = now.isoformat()
@@ -68,9 +69,9 @@ def seed_demo_db(conn: sqlite3.Connection, now: datetime) -> None:
                 customer=customer,
                 created_at=(now - age).isoformat(),
                 inserted_at=stamp,
-                status="PROCESSED" if priority else "PENDING",
+                status=STATUS_PROCESSED,
                 priority_level=priority,
-                classified_at=stamp if priority else None,
+                classified_at=stamp,
             )
             conn.execute(
                 "INSERT INTO tickets (id, content_hash, subject, body, customer, "
@@ -89,6 +90,20 @@ def seed_demo_db(conn: sqlite3.Connection, now: datetime) -> None:
             )
 
 
+def count_non_demo_tickets(db_path: Path | str) -> int:
+    """Tickets in an existing database whose id does not start with "demo-" (0 if none)."""
+    if str(db_path) == ":memory:" or not Path(db_path).is_file():
+        return 0
+    conn = sqlite3.connect(str(db_path))
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM tickets WHERE id NOT LIKE 'demo-%'").fetchone()
+        return row[0]
+    except sqlite3.OperationalError:
+        return 0  # No tickets table, so nothing to lose
+    finally:
+        conn.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     """Create (or recreate) the demo database. Returns a process exit code."""
     parser = argparse.ArgumentParser(
@@ -100,9 +115,26 @@ def main(argv: list[str] | None = None) -> int:
         default=str(DEMO_DB_PATH),
         help=f"Path of the demo database (default: {DEMO_DB_PATH}). It is reset first.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Reset the database even if it holds tickets that are not demo tickets.",
+    )
     args = parser.parse_args(argv)
 
-    conn = init_db(db_path=args.db, reset=True)
+    try:
+        other = 0 if args.force else count_non_demo_tickets(args.db)
+        if other:
+            print(
+                f"error: {args.db} holds {other} ticket(s) that are not demo tickets and "
+                "would be erased. Choose another --db, or pass --force to reset it anyway.",
+                file=sys.stderr,
+            )
+            return 2
+        conn = init_db(db_path=args.db, reset=True)
+    except sqlite3.Error as exc:
+        print(f"error: could not use database {args.db}: {exc}", file=sys.stderr)
+        return 2
     try:
         seed_demo_db(conn, datetime.now(timezone.utc))
     finally:

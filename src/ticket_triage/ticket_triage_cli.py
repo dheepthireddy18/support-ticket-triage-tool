@@ -1,20 +1,27 @@
 """
 Command-line entry point for the Support Ticket Triage Tool.
-The tool loads tickets into SQLite (when --input is given) and writes the daily
-report from the database, as text or (optionally) PDF. Intake is still a temporary stand-in that the real
-intake and priority modules will replace: it stores valid tickets without a
-priority, so they show up as "Unclassified" in the report.
+The tool runs three stages in order: load tickets into SQLite (when --input is
+given), prioritize every ticket still waiting for a priority, and write the daily
+report from the database, as text or (optionally) PDF. Intake is still a temporary
+stand-in that the real intake module will replace.
 """
 
 import argparse
 import json
 import sqlite3
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 from ticket_triage.db import DEFAULT_DB_PATH, init_db
-from ticket_triage.models import RejectedRecord, Ticket
+from ticket_triage.models import Ticket
+from ticket_triage.priority.base import utc_now
+from ticket_triage.priority.config import (
+    DEFAULT_RULES_FILE,
+    PriorityConfig,
+    build_engine,
+    load_config,
+)
+from ticket_triage.priority.repository import prioritize_pending
 from ticket_triage.report import (
     DEFAULT_TOP_N,
     PdfUnavailableError,
@@ -25,83 +32,72 @@ from ticket_triage.report import (
     write_report_pdf,
 )
 
-# TODO(after Rachit's intake and Natalie's rules are merged): delete everything
-# from REQUIRED_FIELDS to load_tickets() below and call Rachit's intake instead.
-# Then call Natalie's prioritize_pending() so tickets get a real priority
-# (this stand-in leaves it empty, so every ticket shows as "Unclassified").
-# Natalie's CLI also rewrote this file: expect merge conflicts here, and her
-# escalation worker blocks until Ctrl+C unless --once is passed.
 REQUIRED_FIELDS = ("id", "subject", "body", "customer", "created_at")
 
 
-def _parse_record(record: object) -> tuple[Ticket | None, str | None]:
-    """Turn one raw record into a Ticket, or explain why it is rejected."""
-    if not isinstance(record, dict):
-        return None, "record is not an object"
-    missing = [name for name in REQUIRED_FIELDS if not record.get(name)]
-    if missing:
-        return None, f"missing required field(s): {', '.join(missing)}"
-
-    ticket = Ticket.from_dict(record)
-    try:
-        ticket.created_at_datetime
-    except ValueError:
-        return None, f"invalid created_at: {record['created_at']!r}"
-    ticket.priority_level = None  # Priorities come from the rules, not the input
-    return ticket, None
-
-
-def _store_ticket(conn: sqlite3.Connection, ticket: Ticket) -> tuple[bool, str | None]:
-    """
-    Insert a ticket. Returns (inserted, rejection_reason). Importing a ticket
-    that is already stored is skipped silently: (False, None).
-    """
-    stored = conn.execute(
-        "SELECT content_hash FROM tickets WHERE id = ?", (ticket.id,)
-    ).fetchone()
-    if stored is not None:
-        if stored["content_hash"] == ticket.content_hash:
-            return False, None
-        return False, f"duplicate id: {ticket.id}"
-    try:
-        with conn:
-            conn.execute(
-                "INSERT INTO tickets (id, content_hash, subject, body, customer, "
-                "created_at, inserted_at, status, priority_level, classified_at, "
-                "metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                ticket.to_db_tuple(),
-            )
-    except sqlite3.IntegrityError:
-        return False, "duplicate content of an existing ticket"
-    return True, None
-
-
-def load_tickets(conn: sqlite3.Connection, path: Path) -> tuple[int, int]:
-    """
-    Store valid tickets from a JSON file as PENDING with no priority, and record
-    the others in rejected_tickets (stand-in: JSON only, basic checks).
-    Returns (inserted, rejected).
-    """
+def load_tickets(path: Path) -> list[dict]:
+    """Read tickets from a JSON file (stand-in: no validation, no CSV)."""
     with path.open(encoding="utf-8") as f:
-        records = json.load(f)
+        return json.load(f)
 
-    inserted = rejected = 0
+
+def store_tickets(conn: sqlite3.Connection, records: list[dict]) -> tuple[int, int]:
+    """
+    Store valid records as PENDING tickets with no priority (stand-in for the real
+    intake: basic checks only, rejected records are skipped, not recorded).
+    A ticket already stored with the same content is skipped silently.
+    Returns (stored, skipped).
+    """
+    stored = skipped = 0
     for record in records:
-        ticket, reason = _parse_record(record)
-        if ticket is not None:
-            was_inserted, reason = _store_ticket(conn, ticket)
-            inserted += was_inserted
-        if reason is not None:
+        if not isinstance(record, dict) or any(not record.get(f) for f in REQUIRED_FIELDS):
+            skipped += 1
+            continue
+        try:
+            ticket = Ticket.from_dict(record)
+            ticket.created_at_datetime  # Reject unparseable dates
+        except (ValueError, TypeError):
+            skipped += 1
+            continue
+        ticket.priority_level = None  # Priorities come from the rules, not the input
+
+        existing = conn.execute(
+            "SELECT content_hash FROM tickets WHERE id = ?", (ticket.id,)
+        ).fetchone()
+        if existing is not None:
+            if existing["content_hash"] != ticket.content_hash:
+                skipped += 1  # Same id, different content: a duplicate id
+            continue
+        try:
             with conn:
                 conn.execute(
-                    "INSERT INTO rejected_tickets (raw_record, rejection_reason, "
-                    "rejected_at) VALUES (?, ?, ?)",
-                    RejectedRecord(
-                        raw_record=record, rejection_reason=reason
-                    ).to_db_tuple(),
+                    """
+                    INSERT INTO tickets (
+                        id, content_hash, subject, body, customer, created_at,
+                        inserted_at, status, priority_level, classified_at, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    ticket.to_db_tuple(),
                 )
-            rejected += 1
-    return inserted, rejected
+            stored += 1
+        except sqlite3.IntegrityError:
+            skipped += 1  # Same content as an existing ticket
+    return stored, skipped
+
+
+def load_rules() -> PriorityConfig:
+    """
+    Read data/priority_rules.json. If it is missing, use the built-in rules and
+    say so. Raises ValueError if the file is invalid.
+    """
+    path = DATA_DIR / DEFAULT_RULES_FILE
+    if not path.is_file():
+        print(f"note: {path} not found; using the built-in priority rules", file=sys.stderr)
+        return load_config(None)
+    try:
+        return load_config(path)
+    except ValueError as exc:
+        raise ValueError(f"invalid priority rules in {path}: {exc}") from exc
 
 
 # --- CLI ---------------------------------------------------------------------
@@ -120,14 +116,14 @@ def file_name(value: str) -> str:
     return value
 
 
-def non_negative_int(value: str) -> int:
-    """argparse type: a whole number that is 0 or more."""
+def positive_int(value: str) -> int:
+    """argparse type: a whole number that is 1 or more."""
     try:
         number = int(value)
     except ValueError:
         raise argparse.ArgumentTypeError(f"'{value}' is not a whole number")
-    if number < 0:
-        raise argparse.ArgumentTypeError(f"'{value}' must be 0 or more")
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"'{value}' must be 1 or more")
     return number
 
 
@@ -151,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=file_name,
         help=(
             f"Name of the tickets file (CSV or JSON) inside {DATA_DIR}/. "
-            "Optional: without it, the report is built from what is already in the database."
+            "Optional: without it, the report is built from the tickets already in the database."
         ),
     )
     parser.add_argument(
@@ -170,7 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--top",
-        type=non_negative_int,
+        type=positive_int,
         default=DEFAULT_TOP_N,
         metavar="N",
         help=(
@@ -200,34 +196,68 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: {exc}", file=sys.stderr)
             return 2
 
-    # Automatically ensure SQLite database and schema exist on startup
-    conn = init_db(db_path=args.db)
-    try:
-        loaded = ""
-        # TODO(after merge): keep --input optional next to Natalie's --resolve.
-        if args.input:
-            input_path = DATA_DIR / args.input
-            if not input_path.is_file():
-                print(f"error: input file not found: {input_path}", file=sys.stderr)
-                return 2
-            try:
-                inserted, rejected = load_tickets(conn, input_path)
-            except (json.JSONDecodeError, OSError) as exc:
-                print(f"error: could not read {input_path}: {exc}", file=sys.stderr)
-                return 2
-            loaded = f"Loaded {inserted} new ticket(s), rejected {rejected}. "
+    output_path = REPORTS_DIR / (args.output or f"daily_summary.{args.format}")
 
-        # The clock is read here and nowhere in the report module.
-        data = build_report_data(conn, datetime.now(timezone.utc), args.top)
+    input_path = DATA_DIR / args.input if args.input else None
+    if input_path is not None and not input_path.is_file():
+        print(f"error: input file not found: {input_path}", file=sys.stderr)
+        return 2
+
+    # Read (and so validate) the priority rules before doing any work
+    try:
+        engine = build_engine(load_rules())
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    tickets = None
+    if input_path is not None:
+        try:
+            tickets = load_tickets(input_path)
+        except (json.JSONDecodeError, OSError) as exc:
+            print(f"error: could not read {input_path}: {exc}", file=sys.stderr)
+            return 2
+
+    # Automatically ensure SQLite database and schema exist on startup
+    db_is_new = args.db != ":memory:" and not Path(args.db).exists()
+    try:
+        conn = init_db(db_path=args.db)
+    except sqlite3.Error as exc:
+        print(f"error: could not open database {args.db}: {exc}", file=sys.stderr)
+        return 2
+    if db_is_new and tickets is None:
+        # Most likely a mistyped --db: say so instead of reporting an empty day silently.
+        print(
+            f"note: {args.db} did not exist, so an empty database was created. "
+            "Use --input to load tickets.",
+            file=sys.stderr,
+        )
+    try:
+        stored = skipped = 0
+        if tickets is not None:
+            stored, skipped = store_tickets(conn, tickets)
+        # Always score tickets still waiting for a priority, then report from the
+        # database. One shared "now" keeps the scoring and the report consistent.
+        now = utc_now()
+        prioritize_pending(conn, engine, now)
+        data = build_report_data(conn, now, args.top)
     finally:
         conn.close()
 
-    output_path = REPORTS_DIR / (args.output or f"daily_summary.{args.format}")
-    if args.format == "pdf":
-        write_report_pdf(data, output_path)
-    else:
-        write_report(render_report(data), output_path)
-    print(f"{loaded}Report saved to {output_path}")
+    try:
+        if args.format == "pdf":
+            write_report_pdf(data, output_path)
+        else:
+            write_report(render_report(data), output_path)
+    except OSError as exc:
+        print(f"error: could not write the report to {output_path}: {exc}", file=sys.stderr)
+        return 2
+
+    loaded = f"Stored {stored} new ticket(s), skipped {skipped}. " if tickets is not None else ""
+    print(
+        f"{loaded}{sum(data.counts_by_priority.values())} prioritized ticket(s). "
+        f"Report saved to {output_path}"
+    )
     return 0
 
 

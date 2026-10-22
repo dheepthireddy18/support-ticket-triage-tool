@@ -34,18 +34,17 @@ def run_tool(*args):
     )
 
 
-# TODO(after Natalie's CLI is merged): her escalation worker keeps the process
-# running until Ctrl+C, so pass "--once" in every run_tool() call or these tests
-# will hang. Also, the sample-file test below uses the default data/tickets.db;
-# with real priorities, check it still finds all five ids within --top.
-def test_full_tool_on_sample_file_writes_report():
-    # The tool reads data/<name> and writes reports/<name>.
+def test_full_tool_on_sample_file_writes_report(tmp_path):
+    # The tool reads data/<name> and writes reports/<name>. A temporary database
+    # keeps the test independent of (and from changing) the local data/tickets.db.
     report_path = PROJECT_ROOT / "reports" / "integration_test_report.txt"
     report_path.unlink(missing_ok=True)
 
     try:
         result = run_tool(
-            "--input", SAMPLE_FILE.name, "--output", report_path.name
+            "--input", SAMPLE_FILE.name,
+            "--output", report_path.name,
+            "--db", str(tmp_path / "tickets.db"),
         )
 
         assert result.returncode == 0, result.stderr
@@ -94,10 +93,10 @@ def test_cli_reports_from_a_seeded_database(tmp_path):
         report_path.unlink(missing_ok=True)
 
     # Header and counts come from the whole database.
-    assert "Total tickets: 13" in report
+    assert "Total tickets: 12" in report
     assert "Rejected records: 2" in report
     assert "HIGH: 6" in report
-    assert "Unclassified: 1" in report
+    assert "Unclassified" not in report
     # --top 3 lists the three oldest HIGH tickets; the 4th and 5th are left out.
     for ticket_id in ("demo-001", "demo-002", "demo-003"):
         assert ticket_id in report
