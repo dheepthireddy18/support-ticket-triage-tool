@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from ticket_triage.db import DEFAULT_DB_PATH, init_db
+from ticket_triage.intake import ingest_tickets_file
 from ticket_triage.models import Ticket
+from ticket_triage.readers import FileReadError
 from ticket_triage.priority.config import (
     DEFAULT_RULES_FILE,
     PriorityConfig,
@@ -22,59 +24,6 @@ from ticket_triage.priority.config import (
 )
 from ticket_triage.priority.engine import PriorityEngine
 from ticket_triage.priority.repository import fetch_prioritized, prioritize_pending
-
-REQUIRED_FIELDS = ("id", "subject", "body", "customer", "created_at")
-
-
-def load_tickets(path: Path) -> list[dict]:
-    """Read tickets from a JSON file (stand-in: no validation, no CSV)."""
-    with path.open(encoding="utf-8") as f:
-        return json.load(f)
-
-
-def store_tickets(conn: sqlite3.Connection, records: list[dict]) -> tuple[int, int]:
-    """
-    Store valid records as PENDING tickets with no priority (stand-in for the real
-    intake: basic checks only, rejected records are skipped, not recorded).
-    A ticket already stored with the same content is skipped silently.
-    Returns (stored, skipped).
-    """
-    stored = skipped = 0
-    for record in records:
-        if not isinstance(record, dict) or any(not record.get(f) for f in REQUIRED_FIELDS):
-            skipped += 1
-            continue
-        try:
-            ticket = Ticket.from_dict(record)
-            ticket.created_at_datetime  # Reject unparseable dates
-        except (ValueError, TypeError):
-            skipped += 1
-            continue
-        ticket.priority_level = None  # Priorities come from the rules, not the input
-
-        existing = conn.execute(
-            "SELECT content_hash FROM tickets WHERE id = ?", (ticket.id,)
-        ).fetchone()
-        if existing is not None:
-            if existing["content_hash"] != ticket.content_hash:
-                skipped += 1  # Same id, different content: a duplicate id
-            continue
-        try:
-            with conn:
-                conn.execute(
-                    """
-                    INSERT INTO tickets (
-                        id, content_hash, subject, body, customer, created_at,
-                        inserted_at, status, priority_level, classified_at, metadata
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    ticket.to_db_tuple(),
-                )
-            stored += 1
-        except sqlite3.IntegrityError:
-            skipped += 1  # Same content as an existing ticket
-    return stored, skipped
-
 
 def load_rules() -> PriorityConfig:
     """
@@ -182,26 +131,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    try:
-        tickets = load_tickets(input_path)
-    except (json.JSONDecodeError, OSError) as exc:
-        print(f"error: could not read {input_path}: {exc}", file=sys.stderr)
-        return 2
-
     # Automatically ensure SQLite database and schema exist on startup
     conn = init_db(db_path=args.db)
     try:
-        stored, skipped = store_tickets(conn, tickets)
+        try:
+            ingest_result = ingest_tickets_file(conn, input_path)
+        except (FileReadError, json.JSONDecodeError, OSError) as exc:
+            print(f"error: could not read {input_path}: {exc}", file=sys.stderr)
+            return 2
+
         prioritized = prioritize(conn, engine)
     finally:
         conn.close()
+
     report = build_report(prioritized)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(report, encoding="utf-8")
 
     print(
-        f"Stored {stored} new ticket(s), skipped {skipped}. "
+        f"Stored {ingest_result.inserted} new ticket(s), rejected {ingest_result.rejected}. "
         f"{len(prioritized)} prioritized ticket(s). Report saved to {output_path}"
     )
     return 0
