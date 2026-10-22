@@ -51,6 +51,7 @@ DEFAULT_RULE_SETTINGS: dict[str, RuleSetting] = {
     "repeat_contact": RuleSetting(params={"window_days": 7, "steps": {"1": 0, "2": 50, "3": 80}}),
     "waiting_time": RuleSetting(params={"cap_hours": 72}),
     "llm_urgency": RuleSetting(enabled=False, params={"model": "claude-haiku-5-5"}),
+    "jev_urgency": RuleSetting(enabled=False, params={"model": "jev-latest"}),
 }
 
 DEFAULT_KEYWORDS: list[Keyword] = [
@@ -89,12 +90,19 @@ def _llm_rule(setting: RuleSetting, keywords: list[Keyword]) -> PriorityRule:
     return LLMUrgencyRule(weight=setting.weight, enabled=setting.enabled, **setting.params)
 
 
+def _jev_rule(setting: RuleSetting, keywords: list[Keyword]) -> PriorityRule:
+    from ticket_triage.priority.jev_rule import JevUrgencyRule
+
+    return JevUrgencyRule(weight=setting.weight, enabled=setting.enabled, **setting.params)
+
+
 # Every known rule, in the order the engine runs them.
 RULE_BUILDERS: dict[str, Callable[[RuleSetting, list[Keyword]], PriorityRule]] = {
     "keyword": _keyword_rule,
     "repeat_contact": _repeat_rule,
     "waiting_time": _waiting_rule,
     "llm_urgency": _llm_rule,
+    "jev_urgency": _jev_rule,
 }
 
 

@@ -58,7 +58,7 @@ Give file names only, not paths. The input file is read from the `data/` folder 
 
 ## Priority Rules
 
-Each valid ticket is scored from 0 to 100 by three rules (plus an optional fourth, below), and the scores are combined into a level: `HIGH`, `MEDIUM` or `LOW`. Each ticket is scored once, the first time the tool sees it: its level goes into the ticket's `priority_level` column, and every rule's score and reason goes into the `ticket_rule_results` table, so you can always see why a ticket got its level:
+Each valid ticket is scored from 0 to 100 by three rules (plus two optional model-based rules, below), and the scores are combined into a level: `HIGH`, `MEDIUM` or `LOW`. Each ticket is scored once, the first time the tool sees it: its level goes into the ticket's `priority_level` column, and every rule's score and reason goes into the `ticket_rule_results` table, so you can always see why a ticket got its level:
 
 ```
 sqlite3 data/tickets.db "SELECT rule_name, score, reason FROM ticket_rule_results WHERE ticket_id = '<id>';"
@@ -70,6 +70,7 @@ sqlite3 data/tickets.db "SELECT rule_name, score, reason FROM ticket_rule_result
 | `repeat_contact` | How many tickets the same customer sent in the 7 days up to this one |
 | `waiting_time` | Hours since `created_at`, reaching 100 at 72 hours |
 | `llm_urgency` | Optional, off by default: Claude rates the urgency (see below) |
+| `jev_urgency` | Optional, off by default: TypeSafe's Jev decision model places the ticket on an urgency rubric (see below) |
 
 The score is the weighted average of the rules. A score of 70 or more is HIGH, 40 or more is MEDIUM, and anything lower is LOW. When rules disagree, the weights decide, except that a keyword's minimum level always wins.
 
@@ -113,6 +114,20 @@ The `llm_urgency` rule asks Claude to rate each ticket's urgency from 0 to 100, 
 3. Turn the rule on by setting `"enabled": true` under `llm_urgency` in `data/priority_rules.json`.
 
 The tool still works without a key or the extra packages. The rule just gives no score, so the other rules decide, and its reason in `ticket_rule_results` says why (for example `incomplete Azure settings, missing AZURE_AI_ENDPOINT`). The rule makes one API call per new ticket, and the class account is shared, so keep it off for large ticket files.
+
+### Optional Jev decision-model rule
+
+The `jev_urgency` rule asks [TypeSafe's Jev](https://docs.typesafe.ai) where the ticket sits on a five-level urgency rubric, from "Can wait" to "Critical". Jev doesn't write text: it returns the ticket's position on the rubric (0 to 4, possibly in between) and how confident it is, and the rule turns that position into 0–100 (for example, 3.0 becomes 75). The rubric is in `URGENCY_LEVELS` in `priority/jev_rule.py`.
+
+1. Add your key to `.env` (see `.env.example`):
+
+   ```
+   TYPESAFE_API_KEY=<your key>
+   ```
+
+2. Turn the rule on by setting `"enabled": true` under `jev_urgency` in `data/priority_rules.json`. Optional `params`: `min_confidence` (0–1; below it the rule gives no score and the other rules decide), `model` (default `jev-latest`) and `timeout_seconds`.
+
+No extra packages are needed. Like the Claude rule, it gives no score if the key is missing or a call fails, and its reason in `ticket_rule_results` says why. It can run alongside `llm_urgency`, each with its own weight.
 
 ## Running the Tests
 

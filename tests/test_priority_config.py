@@ -30,9 +30,10 @@ def test_shipped_rules_file_loads_and_builds_all_rules():
         "repeat_contact",
         "waiting_time",
         "llm_urgency",
+        "jev_urgency",
     ]
-    # The LLM rule ships switched off, so nobody makes paid API calls without opting in.
-    assert [rule.enabled for rule in engine.rules] == [True, True, True, False]
+    # The model rules ship switched off, so nobody makes paid API calls without opting in.
+    assert [rule.enabled for rule in engine.rules] == [True, True, True, False, False]
     assert engine.high_threshold == 70
     assert engine.medium_threshold == 40
 
@@ -106,6 +107,8 @@ def test_llm_rule_settings_from_file(tmp_path):
         {"rules": {"waiting_time": {"params": {"not_a_param": 1}}}},
         {"rules": {"llm_urgency": {"params": {"not_a_param": 1}}}},
         {"rules": {"llm_urgency": {"weight": -1}}},
+        {"rules": {"jev_urgency": {"params": {"min_confidence": 2}}}},
+        {"rules": {"jev_urgency": {"params": {"not_a_param": 1}}}},
         {"keywords": [{"keyword": "outage", "score": 150}]},
         {"keywords": [{"keyword": "outage", "score": 90, "min_level": "SEVERE"}]},
         {"keywords": [{"keyword": "outage"}]},
