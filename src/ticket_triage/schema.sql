@@ -27,3 +27,15 @@ CREATE TABLE IF NOT EXISTS rejected_tickets (
 );
 
 CREATE INDEX IF NOT EXISTS idx_rejected_tickets_rejected_at ON rejected_tickets(rejected_at);
+
+-- Priority rules: each rule's score and reason per ticket, so every priority can be explained
+CREATE TABLE IF NOT EXISTS ticket_rule_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id TEXT NOT NULL REFERENCES tickets(id),
+    rule_name TEXT NOT NULL,             -- e.g. 'keyword', 'repeat_contact', 'waiting_time'
+    score REAL,                          -- 0-100, or NULL when the rule had no opinion
+    reason TEXT NOT NULL,                -- Human-readable explanation
+    created_at TEXT NOT NULL             -- When the ticket was scored (ISO-8601 UTC)
+);
+
+CREATE INDEX IF NOT EXISTS idx_ticket_rule_results_ticket_id ON ticket_rule_results(ticket_id);

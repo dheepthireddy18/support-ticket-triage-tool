@@ -1,3 +1,4 @@
+.env
 .venv/
 __pycache__/
 *.pyc
@@ -16,4 +17,5 @@ reports/
 
 # Architecture and local planning
 ARCHITECTURE_DECISIONS.md
+docs/plans/
 
