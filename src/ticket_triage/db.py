@@ -50,7 +50,7 @@ def init_db(
 
     :param db_path: Path to database file. Defaults to data/tickets.db.
     :param schema_path: Path to SQL schema file. Defaults to schema.sql in package.
-    :param reset: If True, drops existing tickets and rejected_tickets tables first.
+    :param reset: If True, drops existing tickets, rejected_tickets and ticket_rule_results tables first.
     :return: Active sqlite3.Connection to the initialized database.
     """
     conn = get_db_connection(db_path)
@@ -60,6 +60,7 @@ def init_db(
         raise FileNotFoundError(f"Schema file not found at {schema_file}")
 
     if reset:
+        conn.execute("DROP TABLE IF EXISTS ticket_rule_results;")  # References tickets
         conn.execute("DROP TABLE IF EXISTS tickets;")
         conn.execute("DROP TABLE IF EXISTS rejected_tickets;")
         conn.commit()
