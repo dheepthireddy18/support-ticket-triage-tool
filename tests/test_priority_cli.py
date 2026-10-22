@@ -130,3 +130,26 @@ def test_bad_records_are_skipped(workdir, record):
 
     assert code == 0
     assert query(workdir, "SELECT COUNT(*) AS n FROM tickets")[0]["n"] == 0
+
+
+def test_llm_rule_on_without_a_key_still_prioritizes(workdir, monkeypatch):
+    """Turning the LLM rule on without credentials must not break a run."""
+    from ticket_triage.priority import llm_rule
+
+    for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", *llm_rule.AZURE_VARS):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(llm_rule, "load_dotenv_file", lambda: None)  # Never read the real .env
+    (workdir / "data" / "priority_rules.json").write_text(
+        json.dumps({"rules": {"llm_urgency": {"enabled": True}}}), encoding="utf-8"
+    )
+
+    assert run(workdir) == 0
+
+    rows = query(
+        workdir,
+        "SELECT score, reason FROM ticket_rule_results WHERE rule_name = 'llm_urgency'",
+    )
+    assert len(rows) == 5
+    assert {row["score"] for row in rows} == {None}
+    assert {row["reason"] for row in rows} == {"skipped: no Azure or Anthropic API key settings found"}
+    assert query(workdir, f"SELECT priority_level FROM tickets WHERE id = '{OUTAGE_ID}'")[0][0] == "HIGH"
