@@ -27,6 +27,17 @@ Put a JSON or CSV file in the `data/` folder: a list of tickets, each with `id` 
 | `python -m ticket_triage --input my_tickets.json --db data/mine.db --format pdf --output my_report.pdf` | Load `data/my_tickets.json` into its own database and write `reports/my_report.pdf`. Reuse the same `--db` to add more tickets later. |
 | `python -m ticket_triage --db data/mine.db --format pdf --output my_report.pdf` | Rebuild the report from the tickets already stored, without loading a file. |
 
+## Email the report
+
+Gmail setup steps (2-Step Verification and app password) are in the README, section "Email the report (optional)".
+
+| Command | Purpose |
+|---|---|
+| `pip install -e ".[email]"` | Install what emailing needs: `python-dotenv` (reads `.env`) and `truststore` (fixes `CERTIFICATE_VERIFY_FAILED` on Mac). |
+| `cp .env.example .env` | Create your local `.env` (skip if you already have one; it is not committed). Then add the `SMTP_*` lines and `REPORT_EMAIL_TO`. |
+| `python -m ticket_triage --input sample_tickets.json --db data/sample.db --format pdf --email` | Write the PDF and email it (text report in the body, PDF attached) to `REPORT_EMAIL_TO`. |
+| `python -m ticket_triage --db data/sample.db --format pdf --email-to someone@example.com` | Email the PDF to another address instead of the default (no new file load). |
+
 ## 4. Useful options
 
 | Command | Purpose |
