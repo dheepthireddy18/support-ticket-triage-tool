@@ -1,7 +1,7 @@
 """
 Command-line entry point for the Support Ticket Triage Tool.
 The tool loads tickets into SQLite (when --input is given) and writes the daily
-report from the database. Intake is still a temporary stand-in that the real
+report from the database, as text or (optionally) PDF. Intake is still a temporary stand-in that the real
 intake and priority modules will replace: it stores valid tickets without a
 priority, so they show up as "Unclassified" in the report.
 """
@@ -17,9 +17,12 @@ from ticket_triage.db import DEFAULT_DB_PATH, init_db
 from ticket_triage.models import RejectedRecord, Ticket
 from ticket_triage.report import (
     DEFAULT_TOP_N,
+    PdfUnavailableError,
     build_report_data,
     render_report,
+    require_pdf_support,
     write_report,
+    write_report_pdf,
 )
 
 # TODO(after Rachit's intake and Natalie's rules are merged): delete everything
@@ -103,6 +106,7 @@ def load_tickets(conn: sqlite3.Connection, path: Path) -> tuple[int, int]:
 
 # --- CLI ---------------------------------------------------------------------
 
+REPORT_FORMATS = ("txt", "pdf")
 DATA_DIR = Path("data")
 REPORTS_DIR = Path("reports")
 
@@ -152,9 +156,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output",
-        default="daily_summary.txt",
         type=file_name,
-        help=f"Name of the report file, saved inside {REPORTS_DIR}/.",
+        help=(
+            f"Name of the report file, saved inside {REPORTS_DIR}/ "
+            "(default: daily_summary.txt, or daily_summary.pdf with --format pdf)."
+        ),
+    )
+    parser.add_argument(
+        "--format",
+        choices=REPORT_FORMATS,
+        default="txt",
+        help='Report format: "txt" (default) or "pdf" (needs: pip install -e ".[pdf]").',
     )
     parser.add_argument(
         "--top",
@@ -180,6 +192,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Database successfully initialized at {args.db}")
         return 0
 
+    # Fail before touching the database if PDF output cannot work.
+    if args.format == "pdf":
+        try:
+            require_pdf_support()
+        except PdfUnavailableError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
     # Automatically ensure SQLite database and schema exist on startup
     conn = init_db(db_path=args.db)
     try:
@@ -202,7 +222,11 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
 
-    output_path = write_report(render_report(data), REPORTS_DIR / args.output)
+    output_path = REPORTS_DIR / (args.output or f"daily_summary.{args.format}")
+    if args.format == "pdf":
+        write_report_pdf(data, output_path)
+    else:
+        write_report(render_report(data), output_path)
     print(f"{loaded}Report saved to {output_path}")
     return 0
 

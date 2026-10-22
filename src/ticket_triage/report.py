@@ -9,11 +9,14 @@ values share one format. Ties are broken by id so results are deterministic.
 
 build_report_data() combines the queries into one ReportData. render_report()
 turns that into manager-first plain text and write_report() saves it.
+write_report_pdf() writes the same report as a PDF; it needs the optional
+"reportlab" package and everything else works without it.
 """
 
 from __future__ import annotations
 
 import sqlite3
+import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -32,6 +35,21 @@ REPORT_TITLE = "Daily Support Ticket Summary"
 NO_URGENT_MESSAGE = "No urgent tickets today"
 NO_TICKETS_MESSAGE = "No tickets to show"
 UNCLASSIFIED_LABEL = "Unclassified"
+NEEDS_ATTENTION_TITLE = "Needs attention first"
+COUNTS_TITLE = "Counts by priority"
+WAITING_LONGEST_TITLE = "Waiting longest"
+
+PDF_INSTALL_HINT = (
+    'PDF output needs the optional "reportlab" package. '
+    'Install it with: pip install -e ".[pdf]"'
+)
+# PDF page layout (points). Landscape A4 fits a ticket row with a full-length id.
+PDF_FONT = "Courier"
+PDF_BOLD_FONT = "Courier-Bold"
+PDF_FONT_SIZE = 9
+PDF_LINE_HEIGHT = 12
+PDF_MARGIN = 40
+PDF_WRAP_INDENT = " " * 6
 
 
 @dataclass(frozen=True)
@@ -53,6 +71,10 @@ class ReportData:
     top_urgent: list[ReportTicket] = field(default_factory=list)
     longest_waiting: list[ReportTicket] = field(default_factory=list)
     rejected_count: int = 0
+
+
+class PdfUnavailableError(RuntimeError):
+    """PDF output was requested but the optional reportlab package is missing."""
 
 
 # --- Database queries ---------------------------------------------------------
@@ -221,16 +243,16 @@ def render_report(data: ReportData) -> str:
         "",
     ]
     lines += _ticket_section(
-        "Needs attention first", data.top_urgent, NO_URGENT_MESSAGE
+        NEEDS_ATTENTION_TITLE, data.top_urgent, NO_URGENT_MESSAGE
     )
-    lines += ["", "Counts by priority", "------------------"]
+    lines += ["", COUNTS_TITLE, "-" * len(COUNTS_TITLE)]
     for level in PRIORITY_LEVELS:
         lines.append(f"  {level}: {data.counts_by_priority[level]}")
     if data.unclassified_count > 0:
         lines.append(f"  {UNCLASSIFIED_LABEL}: {data.unclassified_count}")
     lines.append("")
     lines += _ticket_section(
-        "Waiting longest", data.longest_waiting, NO_TICKETS_MESSAGE
+        WAITING_LONGEST_TITLE, data.longest_waiting, NO_TICKETS_MESSAGE
     )
     return "\n".join(lines) + "\n"
 
@@ -240,4 +262,64 @@ def write_report(text: str, path: Path | str) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+    return path
+
+
+# --- PDF output (optional) ----------------------------------------------------
+
+
+def require_pdf_support() -> None:
+    """Raise PdfUnavailableError, with install instructions, if reportlab is missing."""
+    try:
+        import reportlab  # noqa: F401
+    except ImportError as exc:
+        raise PdfUnavailableError(PDF_INSTALL_HINT) from exc
+
+
+def write_report_pdf(data: ReportData, path: Path | str) -> Path:
+    """
+    Write the report to `path` as a PDF with the same content as render_report().
+
+    The text is set in a monospace font on landscape A4, with titles in bold.
+    Long rows wrap onto an indented line, and extra pages are added as needed.
+    Characters the PDF font cannot show (outside Western European text) are
+    replaced with "?". Returns the path.
+
+    :raises PdfUnavailableError: if reportlab is not installed.
+    """
+    require_pdf_support()
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+    from reportlab.pdfgen import canvas
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    page_width, page_height = landscape(A4)
+    top = page_height - PDF_MARGIN
+    max_chars = int(
+        (page_width - 2 * PDF_MARGIN) // stringWidth("M", PDF_FONT, PDF_FONT_SIZE)
+    )
+    bold_lines = {REPORT_TITLE, NEEDS_ATTENTION_TITLE, COUNTS_TITLE, WAITING_LONGEST_TITLE}
+
+    # pageCompression=0 keeps the text readable inside the file, so tests can find it.
+    pdf = canvas.Canvas(str(path), pagesize=(page_width, page_height), pageCompression=0)
+    pdf.setTitle(REPORT_TITLE)
+
+    y = top
+    for line in render_report(data).splitlines():
+        wrapped = textwrap.wrap(
+            line, max_chars, subsequent_indent=PDF_WRAP_INDENT, break_long_words=True
+        )
+        for chunk in wrapped or [""]:
+            if y - PDF_LINE_HEIGHT < PDF_MARGIN:
+                pdf.showPage()
+                y = top
+            pdf.setFont(
+                PDF_BOLD_FONT if line in bold_lines else PDF_FONT, PDF_FONT_SIZE
+            )
+            safe = chunk.encode("cp1252", "replace").decode("cp1252")
+            y -= PDF_LINE_HEIGHT
+            pdf.drawString(PDF_MARGIN, y, safe)
+    pdf.save()
     return path

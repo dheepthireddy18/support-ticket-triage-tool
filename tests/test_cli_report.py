@@ -1,6 +1,8 @@
 """Tests for the CLI's report wiring and its stand-in intake."""
 
+import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -152,3 +154,55 @@ class TestTopOption:
 
         assert exc.value.code == 2
         assert "--top" in capsys.readouterr().err
+
+
+class TestFormatOption:
+    needs_reportlab = pytest.mark.skipif(
+        importlib.util.find_spec("reportlab") is None,
+        reason="the optional reportlab package is not installed",
+    )
+
+    def test_default_format_is_txt(self):
+        assert cli.build_parser().parse_args([]).format == "txt"
+
+    def test_unknown_format_is_rejected(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            cli.build_parser().parse_args(["--format", "docx"])
+
+        assert exc.value.code == 2
+        assert "--format" in capsys.readouterr().err
+
+    def test_txt_still_defaults_to_daily_summary_txt(self, workdir):
+        run_cli(workdir)
+
+        assert (workdir / "reports" / "daily_summary.txt").is_file()
+
+    @needs_reportlab
+    def test_pdf_defaults_to_daily_summary_pdf(self, workdir, capsys):
+        name = write_input(workdir, [make_record("t-1")])
+
+        code, _ = run_cli(workdir, "--input", name, "--format", "pdf")
+
+        pdf_path = workdir / "reports" / "daily_summary.pdf"
+        assert code == 0
+        assert pdf_path.read_bytes().startswith(b"%PDF")
+        assert not (workdir / "reports" / "daily_summary.txt").exists()
+        assert "daily_summary.pdf" in capsys.readouterr().out
+
+    @needs_reportlab
+    def test_pdf_respects_output_name(self, workdir):
+        run_cli(workdir, "--format", "pdf", "--output", "morning.pdf")
+
+        assert (workdir / "reports" / "morning.pdf").is_file()
+
+    def test_pdf_without_reportlab_exits_with_install_hint(
+        self, workdir, capsys, monkeypatch
+    ):
+        monkeypatch.setitem(sys.modules, "reportlab", None)
+
+        code, _ = run_cli(workdir, "--format", "pdf")
+
+        assert code == 2
+        assert "pip install" in capsys.readouterr().err
+        assert not (workdir / "t.db").exists()  # failed before touching the database
+        assert not (workdir / "reports").exists()

@@ -12,6 +12,7 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+pdf = ["reportlab>=4"]
 
 [project.scripts]
 ticket-triage = "ticket_triage.ticket_triage_cli:main"

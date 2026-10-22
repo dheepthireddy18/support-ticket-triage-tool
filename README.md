@@ -40,6 +40,7 @@ cd support-ticket-triage-tool
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"         # installs the tool and pytest
+pip install -e ".[dev,pdf]"     # optional: also installs reportlab for --format pdf
 ```
 
 ## Running the Triage Tool
@@ -61,7 +62,8 @@ Give file names only, not paths. The input file is read from the `data/` folder 
 | Option | Description |
 |--------|-------------|
 | `--input FILE` | Tickets file inside `data/`. Optional: without it, the report is built from the tickets already in the database. |
-| `--output FILE` | Report file name inside `reports/` (default `daily_summary.txt`). |
+| `--output FILE` | Report file name inside `reports/` (default `daily_summary.txt`, or `daily_summary.pdf` with `--format pdf`). |
+| `--format txt\|pdf` | Report format (default `txt`). `pdf` needs the optional install described below. |
 | `--top N` | How many tickets to list under "Needs attention first" and "Waiting longest" (default `5`, `0` or more). The totals and counts always cover every ticket. |
 | `--db PATH` | SQLite database file (default `data/tickets.db`). |
 | `--init-db` | Create the database tables and exit. |
@@ -104,6 +106,17 @@ Waiting longest
 4. **Waiting longest**: the oldest tickets of any priority, so nothing is forgotten.
 
 Each ticket row shows the id, customer, subject, priority and how long the ticket has been waiting (for example `2d 3h`, `5h 12m`). Sections are never left blank.
+
+### PDF report (optional)
+
+The same report can be written as a PDF. This needs the optional `reportlab` package, which the rest of the tool does not use:
+
+```
+pip install -e ".[pdf]"
+ticket-triage --input sample_tickets.json --format pdf     # reports/daily_summary.pdf
+```
+
+Without the package, `--format pdf` stops with a message explaining how to install it. The PDF has the same sections and empty states as the text report, in a monospace font on landscape A4. Characters outside Western European text are shown as `?`.
 
 ### Demo data
 

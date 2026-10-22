@@ -1,9 +1,12 @@
 """Integration test: run the whole tool on the sample ticket file."""
 
+import importlib.util
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+import pytest
 
 from ticket_triage.db import init_db
 from ticket_triage.demo import seed_demo_db
@@ -100,3 +103,31 @@ def test_cli_reports_from_a_seeded_database(tmp_path):
         assert ticket_id in report
     assert "demo-004" not in report
     assert "demo-005" not in report
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("reportlab") is None,
+    reason="the optional reportlab package is not installed",
+)
+def test_cli_writes_a_pdf_report_from_a_seeded_database(tmp_path):
+    db_path = tmp_path / "demo.db"
+    conn = init_db(db_path)
+    seed_demo_db(conn, datetime.now(timezone.utc))
+    conn.close()
+    report_path = PROJECT_ROOT / "reports" / "integration_demo_report.pdf"
+    report_path.unlink(missing_ok=True)
+
+    try:
+        result = run_tool(
+            "--db", str(db_path), "--format", "pdf",
+            "--output", report_path.name, "--top", "3",
+        )
+
+        assert result.returncode == 0, result.stderr
+        report = report_path.read_bytes()
+    finally:
+        report_path.unlink(missing_ok=True)
+
+    assert report.startswith(b"%PDF")
+    assert b"Needs attention first" in report
+    assert b"demo-001" in report
