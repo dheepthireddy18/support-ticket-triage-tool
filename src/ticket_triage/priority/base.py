@@ -27,14 +27,6 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def parse_timestamp(value: str) -> datetime:
-    """Parse an ISO-8601 string (with 'Z' or an offset) into an aware UTC datetime."""
-    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
-
-
 def validate_level(level: str | None) -> str | None:
     """Return the level unchanged, or raise ValueError if it is not a known level."""
     if level is not None and level not in LEVELS:

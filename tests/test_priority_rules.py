@@ -5,7 +5,7 @@ from datetime import timedelta
 import pytest
 
 from ticket_triage.models import PRIORITY_HIGH, PRIORITY_MEDIUM
-from ticket_triage.priority.base import PriorityRule, TriageContext, parse_timestamp
+from ticket_triage.priority.base import PriorityRule, TriageContext
 from ticket_triage.priority.keyword_rule import Keyword, KeywordRule
 from ticket_triage.priority.repeat_rule import RepeatContactRule
 from ticket_triage.priority.waiting_rule import WaitingTimeRule
@@ -115,10 +115,9 @@ def test_invalid_keywords_are_rejected(kwargs):
 # --- RepeatContactRule -------------------------------------------------------
 
 
-def history_ctx(now, customer, *created_at):
-    return TriageContext(
-        now=now, customer_history={customer: [parse_timestamp(c) for c in created_at]}
-    )
+def history_ctx(make_ticket, now, customer, *created_at):
+    history = [make_ticket(customer=customer, created_at=c).created_at_datetime for c in created_at]
+    return TriageContext(now=now, customer_history={customer: history})
 
 
 @pytest.mark.parametrize(
@@ -132,7 +131,7 @@ def history_ctx(now, customer, *created_at):
 )
 def test_repeat_contact_counts(make_ticket, fixed_now, earlier, expected):
     ticket = make_ticket(customer="CUST-1", created_at="2026-10-19T09:00:00Z")
-    ctx = history_ctx(fixed_now, "CUST-1", *earlier, ticket.created_at)
+    ctx = history_ctx(make_ticket, fixed_now, "CUST-1", *earlier, ticket.created_at)
 
     result = RepeatContactRule().evaluate(ticket, ctx)
 
@@ -141,14 +140,14 @@ def test_repeat_contact_counts(make_ticket, fixed_now, earlier, expected):
 
 def test_repeat_contact_ignores_tickets_outside_window(make_ticket, fixed_now):
     ticket = make_ticket(customer="CUST-1", created_at="2026-10-19T09:00:00Z")
-    ctx = history_ctx(fixed_now, "CUST-1", "2026-10-01T09:00:00Z", ticket.created_at)
+    ctx = history_ctx(make_ticket, fixed_now, "CUST-1", "2026-10-01T09:00:00Z", ticket.created_at)
 
     assert RepeatContactRule(window_days=7).evaluate(ticket, ctx).score == 0
 
 
 def test_repeat_contact_ignores_later_tickets(make_ticket, fixed_now):
     ticket = make_ticket(customer="CUST-1", created_at="2026-10-18T09:00:00Z")
-    ctx = history_ctx(fixed_now, "CUST-1", ticket.created_at, "2026-10-19T09:00:00Z")
+    ctx = history_ctx(make_ticket, fixed_now, "CUST-1", ticket.created_at, "2026-10-19T09:00:00Z")
 
     assert RepeatContactRule().evaluate(ticket, ctx).score == 0
 
@@ -159,7 +158,7 @@ def test_repeat_contact_customers_do_not_affect_each_other(make_ticket, fixed_no
         now=fixed_now,
         customer_history={
             "CUST-1": [ticket.created_at_datetime],
-            "CUST-10": [parse_timestamp("2026-10-18T09:00:00Z")] * 3,
+            "CUST-10": [make_ticket(created_at="2026-10-18T09:00:00Z").created_at_datetime] * 3,
         },
     )
 
