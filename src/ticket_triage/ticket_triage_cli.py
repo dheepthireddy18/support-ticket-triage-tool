@@ -2,8 +2,7 @@
 Command-line entry point for the Support Ticket Triage Tool.
 The tool runs three stages in order: load tickets into SQLite (when --input is
 given), prioritize every ticket still waiting for a priority, and write the daily
-report from the database, as text or (optionally) PDF. Intake is still a temporary
-stand-in that the real intake module will replace.
+report from the database, as text or (optionally) PDF.
 """
 
 import argparse
@@ -12,8 +11,8 @@ import sqlite3
 import sys
 from pathlib import Path
 
-from ticket_triage.db import DEFAULT_DB_PATH, init_db
-from ticket_triage.models import Ticket
+from ticket_triage.db import DEFAULT_DB_PATH, init_db, seed_db
+from ticket_triage.intake import ingest_tickets_file
 from ticket_triage.priority.base import utc_now
 from ticket_triage.priority.config import (
     DEFAULT_RULES_FILE,
@@ -22,6 +21,7 @@ from ticket_triage.priority.config import (
     load_config,
 )
 from ticket_triage.priority.repository import prioritize_pending
+from ticket_triage.readers import FileReadError
 from ticket_triage.report import (
     DEFAULT_TOP_N,
     PdfUnavailableError,
@@ -31,58 +31,6 @@ from ticket_triage.report import (
     write_report,
     write_report_pdf,
 )
-
-REQUIRED_FIELDS = ("id", "subject", "body", "customer", "created_at")
-
-
-def load_tickets(path: Path) -> list[dict]:
-    """Read tickets from a JSON file (stand-in: no validation, no CSV)."""
-    with path.open(encoding="utf-8") as f:
-        return json.load(f)
-
-
-def store_tickets(conn: sqlite3.Connection, records: list[dict]) -> tuple[int, int]:
-    """
-    Store valid records as PENDING tickets with no priority (stand-in for the real
-    intake: basic checks only, rejected records are skipped, not recorded).
-    A ticket already stored with the same content is skipped silently.
-    Returns (stored, skipped).
-    """
-    stored = skipped = 0
-    for record in records:
-        if not isinstance(record, dict) or any(not record.get(f) for f in REQUIRED_FIELDS):
-            skipped += 1
-            continue
-        try:
-            ticket = Ticket.from_dict(record)
-            ticket.created_at_datetime  # Reject unparseable dates
-        except (ValueError, TypeError):
-            skipped += 1
-            continue
-        ticket.priority_level = None  # Priorities come from the rules, not the input
-
-        existing = conn.execute(
-            "SELECT content_hash FROM tickets WHERE id = ?", (ticket.id,)
-        ).fetchone()
-        if existing is not None:
-            if existing["content_hash"] != ticket.content_hash:
-                skipped += 1  # Same id, different content: a duplicate id
-            continue
-        try:
-            with conn:
-                conn.execute(
-                    """
-                    INSERT INTO tickets (
-                        id, content_hash, subject, body, customer, created_at,
-                        inserted_at, status, priority_level, classified_at, metadata
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    ticket.to_db_tuple(),
-                )
-            stored += 1
-        except sqlite3.IntegrityError:
-            skipped += 1  # Same content as an existing ticket
-    return stored, skipped
 
 
 def load_rules() -> PriorityConfig:
@@ -138,6 +86,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Initialize the SQLite database tables and exit.",
     )
     parser.add_argument(
+        "--seed",
+        action="store_true",
+        help="Seed the SQLite database with data/sample_tickets.json and exit.",
+    )
+    parser.add_argument(
         "--db",
         default=str(DEFAULT_DB_PATH),
         help=f"Path to SQLite database file (default: {DEFAULT_DB_PATH}).",
@@ -188,6 +141,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Database successfully initialized at {args.db}")
         return 0
 
+    if args.seed:
+        inserted, rejected = seed_db(db_path=args.db)
+        print(
+            f"Database successfully seeded at {args.db}: "
+            f"{inserted} valid ticket(s) inserted, {rejected} rejected."
+        )
+        return 0
+
     # Fail before touching the database if PDF output cannot work.
     if args.format == "pdf":
         try:
@@ -210,14 +171,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
-    tickets = None
-    if input_path is not None:
-        try:
-            tickets = load_tickets(input_path)
-        except (json.JSONDecodeError, OSError) as exc:
-            print(f"error: could not read {input_path}: {exc}", file=sys.stderr)
-            return 2
-
     # Automatically ensure SQLite database and schema exist on startup
     db_is_new = args.db != ":memory:" and not Path(args.db).exists()
     try:
@@ -225,17 +178,24 @@ def main(argv: list[str] | None = None) -> int:
     except sqlite3.Error as exc:
         print(f"error: could not open database {args.db}: {exc}", file=sys.stderr)
         return 2
-    if db_is_new and tickets is None:
+
+    if db_is_new and input_path is None:
         # Most likely a mistyped --db: say so instead of reporting an empty day silently.
         print(
             f"note: {args.db} did not exist, so an empty database was created. "
             "Use --input to load tickets.",
             file=sys.stderr,
         )
+
+    ingest_result = None
     try:
-        stored = skipped = 0
-        if tickets is not None:
-            stored, skipped = store_tickets(conn, tickets)
+        if input_path is not None:
+            try:
+                ingest_result = ingest_tickets_file(conn, input_path)
+            except (FileReadError, json.JSONDecodeError, OSError) as exc:
+                print(f"error: could not read {input_path}: {exc}", file=sys.stderr)
+                return 2
+
         # Always score tickets still waiting for a priority, then report from the
         # database. One shared "now" keeps the scoring and the report consistent.
         now = utc_now()
@@ -253,7 +213,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: could not write the report to {output_path}: {exc}", file=sys.stderr)
         return 2
 
-    loaded = f"Stored {stored} new ticket(s), skipped {skipped}. " if tickets is not None else ""
+    loaded = (
+        f"Stored {ingest_result.inserted} new ticket(s), skipped {ingest_result.rejected}. "
+        if ingest_result is not None
+        else ""
+    )
     print(
         f"{loaded}{sum(data.counts_by_priority.values())} prioritized ticket(s). "
         f"Report saved to {output_path}"

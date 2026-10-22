@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from ticket_triage.db import DEFAULT_DB_PATH, get_db_connection, init_db
+from ticket_triage.db import DEFAULT_DB_PATH, get_db_connection, init_db, seed_db
 from ticket_triage.ticket_triage_cli import main as cli_main
 
 
@@ -101,6 +101,32 @@ class TestDatabaseConnectionAndInit(unittest.TestCase):
         )
         self.assertIsNotNone(cursor.fetchone())
         conn.close()
+
+    def test_seed_db(self):
+        inserted, rejected = seed_db(db_path=self.db_path, reset=True)
+        self.assertEqual(inserted, 5)
+        self.assertEqual(rejected, 3)
+
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        valid_count = conn.execute("SELECT COUNT(*) AS cnt FROM tickets;").fetchone()["cnt"]
+        rejected_count = conn.execute("SELECT COUNT(*) AS cnt FROM rejected_tickets;").fetchone()["cnt"]
+        conn.close()
+
+        self.assertEqual(valid_count, 5)
+        self.assertEqual(rejected_count, 3)
+
+    def test_cli_seed_flag(self):
+        custom_db = Path(self.temp_dir.name) / "cli_seed.db"
+        exit_code = cli_main(["--seed", "--db", str(custom_db)])
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(custom_db.is_file())
+
+        conn = sqlite3.connect(custom_db)
+        conn.row_factory = sqlite3.Row
+        valid_count = conn.execute("SELECT COUNT(*) AS cnt FROM tickets;").fetchone()["cnt"]
+        conn.close()
+        self.assertEqual(valid_count, 5)
 
 
 if __name__ == "__main__":

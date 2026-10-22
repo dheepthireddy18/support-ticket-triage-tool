@@ -15,12 +15,12 @@ Run every command from the project folder. The main flow uses the project's samp
 |---|---|
 | `python -m ticket_triage --input sample_tickets.json --db data/sample.db` | Load the sample tickets into `data/sample.db`, score them, and write the text report to `reports/daily_summary.txt`. |
 | `cat reports/daily_summary.txt` | Show the text report in the terminal. |
-| `python -m ticket_triage --input sample_tickets.json --db data/sample.db --format pdf` | Write the PDF report to `reports/daily_summary.pdf` (the tickets are already stored, so none are added again). |
+| `python -m ticket_triage --input sample_tickets.json --db data/sample.db --format pdf` | Write the PDF report to `reports/daily_summary.pdf` (the tickets are already stored, so none are added again). The report's "Rejected records" counts every rejection ever logged, so it grows each time you load a file that has invalid rows. |
 | `open reports/daily_summary.pdf` | Open the PDF (macOS). |
 
 ## 3. Generate the report from your own tickets file
 
-Put a JSON file in the `data/` folder: a list of tickets, each with `id` (unique), `subject`, `body`, `customer` and `created_at` (ISO 8601, e.g. `2026-10-19T08:30:00Z`). Use its file name (no folder) with `--input`.
+Put a JSON or CSV file in the `data/` folder: a list of tickets, each with `id` (unique), `subject`, `body`, `customer` and `created_at` (ISO 8601, e.g. `2026-10-19T08:30:00Z`). Use its file name (no folder) with `--input`.
 
 | Command | Purpose |
 |---|---|
