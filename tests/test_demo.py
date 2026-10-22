@@ -5,49 +5,68 @@ from datetime import datetime, timedelta, timezone
 from ticket_triage.db import get_db_connection, init_db
 from ticket_triage.demo import DEMO_TICKETS, count_non_demo_tickets, main, seed_demo_db
 from ticket_triage.models import Ticket
+from ticket_triage.priority.engine import build_default_engine
+from ticket_triage.priority.repository import prioritize_open
 from ticket_triage.report import build_report_data
 
 NOW = datetime(2026, 10, 19, 12, 0, tzinfo=timezone.utc)
 
 
-def test_seeded_database_has_every_report_case(conn):
+def scored_demo(conn):
+    """Seed the demo and score it with the default rules, as the tool's next run does."""
+    seed_demo_db(conn, NOW)
+    prioritize_open(conn, build_default_engine(), NOW)
+    return conn
+
+
+def test_seeded_tickets_are_unscored_until_the_tool_runs(conn):
     seed_demo_db(conn, NOW)
 
     data = build_report_data(conn, NOW)
 
     assert data.total_tickets == len(DEMO_TICKETS) == 12
-    assert data.counts_by_priority == {"HIGH": 6, "MEDIUM": 3, "LOW": 3}
-    assert data.unclassified_count == 0  # priorities are seeded directly
+    assert data.unclassified_count == 12  # Stored as PENDING, like intake leaves them
     assert data.rejected_count == 2
 
 
-def test_more_high_tickets_than_default_top(conn):
-    seed_demo_db(conn, NOW)
+def test_default_rules_give_each_demo_ticket_its_listed_level(conn):
+    scored_demo(conn)
 
+    levels = dict(conn.execute("SELECT id, priority_level FROM tickets").fetchall())
+
+    assert levels == {ticket_id: level for ticket_id, _, _, level, _ in DEMO_TICKETS}
     data = build_report_data(conn, NOW)
+    assert data.counts_by_priority == {"HIGH": 2, "MEDIUM": 3, "LOW": 7}
+    assert data.unclassified_count == 0
 
-    # 6 HIGH tickets exist, so the default top 5 cuts one off.
-    assert [r.ticket.id for r in data.top_urgent] == [
-        "demo-001", "demo-002", "demo-003", "demo-004", "demo-005",
-    ]
+
+def test_top_cuts_off_extra_urgent_tickets(conn):
+    scored_demo(conn)
+
+    data = build_report_data(conn, NOW, 1)
+
+    # 2 HIGH tickets exist; --top 1 keeps only the oldest.
+    assert [r.ticket.id for r in data.top_urgent] == ["demo-001"]
 
 
 def test_tie_on_created_at_is_ordered_by_id(conn):
-    seed_demo_db(conn, NOW)
+    scored_demo(conn)
 
-    data = build_report_data(conn, NOW)
+    data = build_report_data(conn, NOW, len(DEMO_TICKETS))
 
-    first, second = data.top_urgent[1], data.top_urgent[2]
+    ids = [r.ticket.id for r in data.longest_waiting]
+    first, second = (data.longest_waiting[ids.index(i)] for i in ("demo-002", "demo-003"))
+    assert ids.index("demo-003") == ids.index("demo-002") + 1
     assert first.ticket.created_at == second.ticket.created_at
-    assert (first.ticket.id, second.ticket.id) == ("demo-002", "demo-003")
 
 
 def test_tickets_are_dated_relative_to_now(conn):
-    seed_demo_db(conn, NOW)
+    scored_demo(conn)
 
     data = build_report_data(conn, NOW)
 
     assert data.top_urgent[0].waiting == timedelta(days=2, hours=3)
+    assert data.longest_waiting[0].waiting == timedelta(days=6)
 
 
 def test_main_creates_database_and_can_be_rerun(tmp_path, capsys):

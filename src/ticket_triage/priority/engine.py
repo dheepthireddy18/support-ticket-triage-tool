@@ -60,7 +60,7 @@ class PriorityEngine:
 
     def score(self, ticket: Ticket, ctx: TriageContext) -> PriorityResult:
         enabled = [rule for rule in self.rules if rule.enabled]
-        results = [rule.evaluate(ticket, ctx) for rule in enabled]
+        results = [self._evaluate(rule, ticket, ctx) for rule in enabled]
 
         weighted = [
             (rule.weight, result.score)
@@ -79,6 +79,15 @@ class PriorityEngine:
                 level = higher_level(level, result.min_level)
 
         return PriorityResult(ticket.id, score, level, results)
+
+    @staticmethod
+    def _evaluate(rule: PriorityRule, ticket: Ticket, ctx: TriageContext) -> RuleResult:
+        """Run a rule, or reuse its saved score if it only needs scoring once."""
+        if rule.score_once:
+            saved = ctx.saved_results.get((ticket.id, rule.name))
+            if saved is not None and saved.score is not None:  # A saved skip is retried
+                return saved
+        return rule.evaluate(ticket, ctx)
 
 
 def build_default_engine() -> PriorityEngine:

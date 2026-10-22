@@ -65,6 +65,7 @@ Give file names only, not paths. The input file is read from the `data/` folder 
 | `--top N` | How many tickets to list under "Needs attention first" and "Waiting longest" (default `5`, `1` or more). The totals and counts always cover every ticket. |
 | `--db PATH` | SQLite database file (default `data/tickets.db`). |
 | `--init-db` | Create the database tables and exit. |
+| `--resolve TICKET_ID` | Mark one ticket as resolved and exit. It is no longer re-scored or shown in the report. Can't be combined with `--input`. |
 
 ```
 ticket-triage --input sample_tickets.json --top 3
@@ -83,13 +84,13 @@ Rejected records: 2
 Needs attention first
 ---------------------
   demo-001 | ACME | Production outage: orders failing | HIGH | waiting 2d 3h
-  ...
+  demo-005 | ACME | Security alert on admin account | HIGH | waiting 1h 0m
 
 Counts by priority
 ------------------
-  HIGH: 6
+  HIGH: 2
   MEDIUM: 3
-  LOW: 3
+  LOW: 7
 
 Waiting longest
 ---------------
@@ -97,7 +98,7 @@ Waiting longest
   ...
 ```
 
-1. **Header**: the date, the total number of tickets and how many records were rejected.
+1. **Header**: the date, the total number of open (unresolved) tickets and how many records were rejected.
 2. **Needs attention first**: HIGH priority tickets, oldest first. This is what a manager should act on first. It shows "No urgent tickets today" when there are none.
 3. **Counts by priority**: HIGH, MEDIUM and LOW. An "Unclassified: N" line appears only if some tickets have no priority yet (for example if a run stopped before they were scored).
 4. **Waiting longest**: the oldest tickets of any priority, so nothing is forgotten.
@@ -113,21 +114,39 @@ python -m ticket_triage.demo                  # creates data/demo.db (reset each
 python -m ticket_triage --db data/demo.db     # report from the demo database
 ```
 
-The seeder resets the database it writes to, so it refuses to touch a database that holds other tickets unless you pass `--force`. The demo data has 12 tickets, with more HIGH tickets than the default `--top` and a tie on creation time, plus two rejected records. Its priorities are written directly, not scored by the rules, so it has no entries in `ticket_rule_results`.
+The seeder resets the database it writes to, so it refuses to touch a database that holds other tickets unless you pass `--force`. The demo data has 12 tickets, including a tie on creation time, plus two rejected records. The tickets are stored unscored, as intake leaves them, so the tool's first run scores them with the real priority rules (2 HIGH, 3 MEDIUM, 7 LOW) and later runs re-score them as they wait.
 
 ## Priority Rules
 
-Each valid ticket is scored from 0 to 100 by three rules (plus two optional model-based rules, below), and the scores are combined into a level: `HIGH`, `MEDIUM` or `LOW`. Each ticket is scored once, the first time the tool sees it: its level goes into the ticket's `priority_level` column, and every rule's score and reason goes into the `ticket_rule_results` table, so you can always see why a ticket got its level:
+Each valid ticket is scored from 0 to 100 by three rules (plus two optional model-based rules, below), and the scores are combined into a level: `HIGH`, `MEDIUM` or `LOW`.
+
+**Every run re-scores every open ticket** against the current time, not just new ones, so a ticket becomes more urgent the longer it waits. For example, a routine invoice question can start LOW and rise to MEDIUM a few days later. The tool is meant to be run repeatedly (for example once a day); there is no background process. On each run:
+
+- the ticket's current level goes into its `priority_level` column, and `classified_at` records when it was last scored;
+- every rule's score and reason for that run is **added** to the `ticket_rule_results` table, so the table keeps the full history of how each ticket's priority changed;
+- the paid model rules (`llm_urgency`, `jev_urgency`) are only called the first time they give a ticket a score. Later runs reuse that saved score, marked "(saved from first scoring)", because a ticket's text doesn't change. A skipped call (no key, or an error) is tried again on the next run.
+
+A level can go down as well as up, for example if someone lowers a weight in the rules file. Resolved tickets (see `--resolve`) are no longer re-scored or reported.
+
+To see why a ticket has its level, and how it changed run by run:
 
 ```
-sqlite3 data/tickets.db "SELECT rule_name, score, reason FROM ticket_rule_results WHERE ticket_id = '<id>';"
+sqlite3 data/tickets.db "SELECT created_at, rule_name, score, reason FROM ticket_rule_results WHERE ticket_id = '<id>' ORDER BY id;"
 ```
+
+To close a ticket once support has dealt with it:
+
+```
+ticket-triage --resolve <id>
+```
+
+It exits with 0 when the ticket is resolved (or already was) and 1 if no ticket has that id. The ticket's priority history is kept.
 
 | Rule | What it looks at |
 |---|---|
-| `keyword` | Urgent words in the subject or body. The highest-scoring match wins, and a keyword can set a minimum level (e.g. `outage` is always at least HIGH). |
+| `keyword` | Urgent words in the subject or body. The highest-scoring match wins, and a keyword can set a minimum level (e.g. `outage` and `security` are always at least HIGH). |
 | `repeat_contact` | How many tickets the same customer sent in the 7 days up to this one |
-| `waiting_time` | Hours since `created_at`, reaching 100 at 72 hours |
+| `waiting_time` | Hours since `created_at`, reaching 100 at 72 hours (`cap_hours` in the rules file). Re-scored every run, this is what makes urgency rise over time. |
 | `llm_urgency` | Optional, off by default: Claude rates the urgency (see below) |
 | `jev_urgency` | Optional, off by default: TypeSafe's Jev decision model places the ticket on an urgency rubric (see below) |
 

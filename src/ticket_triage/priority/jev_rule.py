@@ -77,6 +77,7 @@ class JevUrgencyRule(PriorityRule):
     """Score a ticket with TypeSafe's Jev. Abstains instead of raising on any problem."""
 
     name = "jev_urgency"
+    score_once = True  # A ticket's text doesn't change: one paid call per ticket
 
     def __init__(
         self,

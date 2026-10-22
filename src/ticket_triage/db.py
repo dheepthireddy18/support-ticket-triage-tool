@@ -12,6 +12,12 @@ from pathlib import Path
 DEFAULT_DB_PATH = Path("data/tickets.db")
 SCHEMA_FILE = Path(__file__).resolve().parent / "schema.sql"
 
+# Columns added to `tickets` after the first schema version. CREATE TABLE IF NOT
+# EXISTS does not add columns to an existing table, so init_db adds them.
+ADDED_TICKET_COLUMNS = {
+    "resolved_at": "TEXT",
+}
+
 
 def get_db_connection(db_path: Path | str | None = None) -> sqlite3.Connection:
     """
@@ -68,9 +74,20 @@ def init_db(
     with schema_file.open("r", encoding="utf-8") as f:
         schema_sql = f.read()
 
+    _add_missing_ticket_columns(conn)
     conn.executescript(schema_sql)
     conn.commit()
     return conn
+
+
+def _add_missing_ticket_columns(conn: sqlite3.Connection) -> None:
+    """Bring a `tickets` table created by an older schema up to date (no data lost)."""
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(tickets);")}
+    if not existing:
+        return  # No table yet: the schema script creates it in full
+    for column, definition in ADDED_TICKET_COLUMNS.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE tickets ADD COLUMN {column} {definition};")
 
 
 def main(argv: list[str] | None = None) -> int:

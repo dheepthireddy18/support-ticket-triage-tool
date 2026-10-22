@@ -61,7 +61,7 @@ class ReportData:
 
 def count_by_priority(conn: sqlite3.Connection) -> dict[str, int]:
     """
-    Count tickets per priority level.
+    Count open (unresolved) tickets per priority level.
 
     Always returns HIGH, MEDIUM and LOW keys, using 0 for a level with no
     tickets. Tickets with a NULL priority_level are not counted here; see
@@ -72,7 +72,7 @@ def count_by_priority(conn: sqlite3.Connection) -> dict[str, int]:
         """
         SELECT priority_level, COUNT(*) AS n
         FROM tickets
-        WHERE priority_level IS NOT NULL
+        WHERE priority_level IS NOT NULL AND resolved_at IS NULL
         GROUP BY priority_level
         """
     )
@@ -83,19 +83,19 @@ def count_by_priority(conn: sqlite3.Connection) -> dict[str, int]:
 
 
 def count_unclassified(conn: sqlite3.Connection) -> int:
-    """Number of tickets that have no priority_level yet."""
+    """Number of open tickets that have no priority_level yet."""
     row = conn.execute(
-        "SELECT COUNT(*) AS n FROM tickets WHERE priority_level IS NULL"
+        "SELECT COUNT(*) AS n FROM tickets WHERE priority_level IS NULL AND resolved_at IS NULL"
     ).fetchone()
     return row["n"]
 
 
 def fetch_top_urgent(conn: sqlite3.Connection, limit: int) -> list[Ticket]:
-    """HIGH priority tickets, oldest created_at first, at most `limit`."""
+    """Open HIGH priority tickets, oldest created_at first, at most `limit`."""
     rows = conn.execute(
         """
         SELECT * FROM tickets
-        WHERE priority_level = ?
+        WHERE priority_level = ? AND resolved_at IS NULL
         ORDER BY created_at ASC, id ASC
         LIMIT ?
         """,
@@ -105,10 +105,11 @@ def fetch_top_urgent(conn: sqlite3.Connection, limit: int) -> list[Ticket]:
 
 
 def fetch_longest_waiting(conn: sqlite3.Connection, limit: int) -> list[Ticket]:
-    """Tickets of any priority, oldest created_at first, at most `limit`."""
+    """Open tickets of any priority, oldest created_at first, at most `limit`."""
     rows = conn.execute(
         """
         SELECT * FROM tickets
+        WHERE resolved_at IS NULL
         ORDER BY created_at ASC, id ASC
         LIMIT ?
         """,

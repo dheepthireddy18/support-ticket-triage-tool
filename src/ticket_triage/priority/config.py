@@ -56,6 +56,7 @@ DEFAULT_RULE_SETTINGS: dict[str, RuleSetting] = {
 
 DEFAULT_KEYWORDS: list[Keyword] = [
     Keyword("outage", 90, PRIORITY_HIGH),
+    Keyword("security", 90, PRIORITY_HIGH),
     Keyword("urgent", 80),
     Keyword("locked out", 80),
     Keyword("payment failed", 70),

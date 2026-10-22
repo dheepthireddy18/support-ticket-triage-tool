@@ -152,3 +152,59 @@ def test_sample_tickets_get_documented_levels(sample_tickets, fixed_now):
         r for r in levels["Unable to log in"].rule_results if r.rule_name == "repeat_contact"
     )
     assert login_repeat.score == 50
+
+
+# --- Rules that are scored once (paid model rules) ------------------------------
+
+
+class Once(Fixed):
+    score_once = True
+
+
+def saved_ctx(ctx, ticket, rule_name, score, reason="saved"):
+    from ticket_triage.priority.base import RuleResult
+
+    return TriageContext(
+        now=ctx.now, saved_results={(ticket.id, rule_name): RuleResult(rule_name, score, reason)}
+    )
+
+
+def test_score_once_rule_reuses_its_saved_score(make_ticket, ctx):
+    ticket = make_ticket()
+    rule = Once("model", 10)
+
+    result = PriorityEngine([rule]).score(ticket, saved_ctx(ctx, ticket, "model", 80))
+
+    assert result.score == 80
+    assert result.rule_results[0].reason == "saved"
+
+
+def test_score_once_rule_is_evaluated_when_nothing_is_saved(make_ticket, ctx):
+    assert PriorityEngine([Once("model", 10)]).score(make_ticket(), ctx).score == 10
+
+
+def test_saved_skip_is_evaluated_again(make_ticket, ctx):
+    ticket = make_ticket()
+
+    result = PriorityEngine([Once("model", 10)]).score(ticket, saved_ctx(ctx, ticket, "model", None))
+
+    assert result.score == 10
+
+
+def test_ordinary_rules_ignore_saved_results(make_ticket, ctx):
+    ticket = make_ticket()
+
+    result = PriorityEngine([Fixed("waiting", 10)]).score(ticket, saved_ctx(ctx, ticket, "waiting", 80))
+
+    assert result.score == 10  # Time-based rules are recalculated every run
+
+
+def test_model_rules_are_marked_score_once():
+    from ticket_triage.priority.jev_rule import JevUrgencyRule
+    from ticket_triage.priority.keyword_rule import KeywordRule
+    from ticket_triage.priority.llm_rule import LLMUrgencyRule
+    from ticket_triage.priority.repeat_rule import RepeatContactRule
+    from ticket_triage.priority.waiting_rule import WaitingTimeRule
+
+    assert LLMUrgencyRule.score_once and JevUrgencyRule.score_once
+    assert not any(r.score_once for r in (KeywordRule, RepeatContactRule, WaitingTimeRule))
