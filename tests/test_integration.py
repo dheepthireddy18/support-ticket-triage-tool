@@ -2,7 +2,11 @@
 
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+
+from ticket_triage.db import init_db
+from ticket_triage.demo import seed_demo_db
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SAMPLE_FILE = PROJECT_ROOT / "data" / "sample_tickets.json"
@@ -27,14 +31,17 @@ def run_tool(*args):
     )
 
 
-def test_full_tool_on_sample_file_writes_report():
-    # The tool reads data/<name> and writes reports/<name>.
+def test_full_tool_on_sample_file_writes_report(tmp_path):
+    # The tool reads data/<name> and writes reports/<name>. A temporary database
+    # keeps the test independent of (and from changing) the local data/tickets.db.
     report_path = PROJECT_ROOT / "reports" / "integration_test_report.txt"
     report_path.unlink(missing_ok=True)
 
     try:
         result = run_tool(
-            "--input", SAMPLE_FILE.name, "--output", report_path.name
+            "--input", SAMPLE_FILE.name,
+            "--output", report_path.name,
+            "--db", str(tmp_path / "tickets.db"),
         )
 
         assert result.returncode == 0, result.stderr
@@ -62,3 +69,33 @@ def test_missing_input_file_exits_with_error():
 
     assert result.returncode == 2
     assert "not found" in result.stderr
+
+
+def test_cli_reports_from_a_seeded_database(tmp_path):
+    db_path = tmp_path / "demo.db"
+    conn = init_db(db_path)
+    seed_demo_db(conn, datetime.now(timezone.utc))
+    conn.close()
+    report_path = PROJECT_ROOT / "reports" / "integration_demo_report.txt"
+    report_path.unlink(missing_ok=True)
+
+    try:
+        result = run_tool(
+            "--db", str(db_path), "--output", report_path.name, "--top", "3"
+        )
+
+        assert result.returncode == 0, result.stderr
+        report = report_path.read_text(encoding="utf-8")
+    finally:
+        report_path.unlink(missing_ok=True)
+
+    # Header and counts come from the whole database.
+    assert "Total tickets: 12" in report
+    assert "Rejected records: 2" in report
+    assert "HIGH: 6" in report
+    assert "Unclassified" not in report
+    # --top 3 lists the three oldest HIGH tickets; the 4th and 5th are left out.
+    for ticket_id in ("demo-001", "demo-002", "demo-003"):
+        assert ticket_id in report
+    assert "demo-004" not in report
+    assert "demo-005" not in report

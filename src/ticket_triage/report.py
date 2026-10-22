@@ -27,6 +27,7 @@ from ticket_triage.models import (
 
 PRIORITY_LEVELS = (PRIORITY_HIGH, PRIORITY_MEDIUM, PRIORITY_LOW)
 DEFAULT_TOP_N = 5
+MAX_TOP_N = 2**31 - 1  # Far more rows than a report holds; keeps LIMIT inside SQLite's range
 
 REPORT_TITLE = "Daily Support Ticket Summary"
 NO_URGENT_MESSAGE = "No urgent tickets today"
@@ -141,7 +142,7 @@ def build_report_data(
 
     `now` is passed in so the report never reads the clock; it must be
     timezone-aware. `top_n` limits both the urgent list and the longest-waiting
-    list; 0 gives empty lists.
+    list; 0 gives empty lists, and anything above MAX_TOP_N is treated as MAX_TOP_N.
 
     :raises ValueError: if `now` is timezone-naive or `top_n` is negative
         (SQLite treats a negative LIMIT as "no limit").
@@ -150,6 +151,7 @@ def build_report_data(
         raise ValueError("now must be timezone-aware")
     if top_n < 0:
         raise ValueError(f"top_n must be 0 or more, got {top_n}")
+    top_n = min(top_n, MAX_TOP_N)
 
     counts = count_by_priority(conn)
     unclassified = count_unclassified(conn)
@@ -186,13 +188,18 @@ def format_waiting(waiting: timedelta) -> str:
     return "<1m"
 
 
+def _one_line(text: str) -> str:
+    """Collapse all whitespace, including newlines, so a ticket stays on one line."""
+    return " ".join(text.split())
+
+
 def _ticket_row(entry: ReportTicket) -> str:
     """One report line: id, customer, subject, priority and waiting time."""
     ticket = entry.ticket
-    subject = " ".join(ticket.subject.split())  # keep each ticket on one line
     priority = ticket.priority_level or UNCLASSIFIED_LABEL
     return (
-        f"  {ticket.id} | {ticket.customer} | {subject} | {priority} "
+        f"  {_one_line(ticket.id)} | {_one_line(ticket.customer)} "
+        f"| {_one_line(ticket.subject)} | {priority} "
         f"| waiting {format_waiting(entry.waiting)}"
     )
 

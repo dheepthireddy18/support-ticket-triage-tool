@@ -55,7 +55,8 @@ def test_run_gives_every_valid_ticket_a_real_priority(workdir, capsys):
     assert dict((row["id"], row["priority_level"]) for row in rows)[OUTAGE_ID] == "HIGH"
 
     report = (workdir / "reports" / "daily_summary.txt").read_text(encoding="utf-8")
-    assert f"[HIGH] {OUTAGE_ID}" in report
+    # The report lists the outage as one row: "<id> | <customer> | <subject> | HIGH | waiting ..."
+    assert any(OUTAGE_ID in line and "| HIGH |" in line for line in report.splitlines())
     assert "UNRATED" not in report
     assert "Stored 5 new ticket(s), skipped 3." in capsys.readouterr().out
 
