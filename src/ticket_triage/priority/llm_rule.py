@@ -66,6 +66,7 @@ class LLMUrgencyRule(PriorityRule):
     """Score a ticket with Claude. Abstains instead of raising on any problem."""
 
     name = "llm_urgency"
+    score_once = True  # A ticket's text doesn't change: one paid call per ticket
 
     def __init__(
         self,

@@ -100,3 +100,30 @@ class TestCountRejected:
 
     def test_empty_db(self, conn):
         assert count_rejected(conn) == 0
+
+
+class TestResolvedTicketsAreLeftOut:
+    """Resolved tickets (resolved_at set) leave every part of the report."""
+
+    @pytest.fixture
+    def with_resolved(self, seeded):
+        seeded.execute(
+            "UPDATE tickets SET resolved_at = '2026-10-20T10:00:00Z' WHERE id IN ('a', 'e', 'f')"
+        )
+        seeded.commit()
+        return seeded
+
+    def test_counts_by_priority(self, with_resolved):
+        assert count_by_priority(with_resolved) == {"HIGH": 2, "MEDIUM": 1, "LOW": 0}
+
+    def test_unclassified(self, with_resolved):
+        assert count_unclassified(with_resolved) == 0
+
+    def test_top_urgent(self, with_resolved):
+        assert [t.id for t in fetch_top_urgent(with_resolved, 5)] == ["b", "c"]
+
+    def test_longest_waiting(self, with_resolved):
+        assert [t.id for t in fetch_longest_waiting(with_resolved, 5)] == ["d", "b", "c"]
+
+    def test_rejected_records_are_unaffected(self, with_resolved):
+        assert count_rejected(with_resolved) == 2
