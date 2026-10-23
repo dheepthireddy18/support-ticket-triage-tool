@@ -4,8 +4,8 @@
     "keyword":        {"enabled": true,  "weight": 1.0, "params": {"baseline": 10}},
     "repeat_contact": {"enabled": true,  "weight": 1.0, "params": {"window_days": 7, "steps": {"1": 0, "2": 50, "3": 80}}},
     "waiting_time":   {"enabled": true,  "weight": 1.0, "params": {"cap_hours": 72}},
-    "llm_urgency":    {"enabled": false, "weight": 1.0, "params": {"model": "claude-haiku-5-5"}},
-    "jev_urgency":    {"enabled": false, "weight": 1.0, "params": {"model": "jev-latest"}}
+    "llm_urgency":    {"enabled": true, "weight": 1.0, "params": {"model": "claude-haiku-5-5"}},
+    "jev_urgency":    {"enabled": true, "weight": 1.0, "params": {"model": "jev-latest"}}
   },
   "keywords": [
     {"keyword": "outage",          "score": 90, "min_level": "HIGH"},

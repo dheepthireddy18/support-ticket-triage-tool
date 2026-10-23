@@ -1,0 +1,41 @@
+# ==============================================================================
+# CSV INGESTION SCENARIOS & TEST DATA
+# Demonstrates: Valid tickets, multi-line bodies, metadata bundling, and rejections
+# ==============================================================================
+
+id,customer,subject,body,created_at,source,priority_tag,expected_outcome
+
+# --- SCENARIO 1: Clean Valid Ticket (Happy Path) ---
+# EXPECTED: PASS -> Stored in tickets table with status 'PENDING'
+csv-201,CUST-701,Payment Gateway Failure,Transactions failing with error code 502 Bad Gateway,2026-10-23T08:00:00Z,webhook,P1,PASS: Valid ticket stored
+
+# --- SCENARIO 2: Valid Ticket with Multi-Line Body & Commas ---
+# EXPECTED: PASS -> Stored in tickets table; line breaks and commas preserved correctly
+csv-202,CUST-702,Server High CPU Alert,"Host server-04 CPU usage exceeded 95% for 15 minutes.
+Process: postgres
+Load avg: 14.2, 12.1, 9.8",2026-10-23T08:15:00Z,datadog,P2,PASS: Valid multi-line ticket stored
+
+# --- SCENARIO 3: Valid Ticket with Extra Columns (Dynamic Metadata Bundling) ---
+# EXPECTED: PASS -> Core 5 fields valid; 'source', 'priority_tag', and 'expected_outcome' bundled into metadata JSON
+csv-203,CUST-703,Feature Request: Dark Mode,Requesting dark mode theme support for web portal,2026-10-23T08:30:00Z,portal,P3,PASS: Stored with metadata bundled
+
+# --- SCENARIO 4: Missing Required Field (Empty Body) ---
+# EXPECTED: REJECT -> Routed to rejected_tickets table ("Missing required field(s): body")
+csv-204,CUST-704,Empty Body Issue,,2026-10-23T08:45:00Z,email,P2,REJECT: Missing required field body
+
+# --- SCENARIO 5: Missing Required Field (Empty Customer) ---
+# EXPECTED: REJECT -> Routed to rejected_tickets table ("Missing required field(s): customer")
+csv-205,,Missing Customer ID,Database lockup reported by client,2026-10-23T09:00:00Z,phone,P1,REJECT: Missing required field customer
+
+# --- SCENARIO 6: Invalid Date Timestamp (Non-ISO-8601 UTC) ---
+# EXPECTED: REJECT -> Routed to rejected_tickets table ("Invalid date format for created_at")
+csv-206,CUST-706,Bad Date String,Cannot download October invoice,2 hours ago,chat,P3,REJECT: Invalid date format
+
+# --- SCENARIO 7: In-Batch Duplicate ID Collision ---
+# EXPECTED: REJECT -> Reuses ID 'csv-201'; rejected for duplicate ID within batch
+csv-201,CUST-707,Duplicate ID Attempt,Different issue reusing an already seen ID,2026-10-23T09:30:00Z,portal,P2,REJECT: Duplicate ticket ID in batch
+
+# --- SCENARIO 8: Content-Hash Duplicate (Different ID, Identical Issue) ---
+# EXPECTED: REJECT -> New ID 'csv-208', but identical customer, subject, and body as csv-201
+csv-208,CUST-701,Payment Gateway Failure,Transactions failing with error code 502 Bad Gateway,2026-10-23T09:45:00Z,webhook,P1,REJECT: Duplicate content hash
+
