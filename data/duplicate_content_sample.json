@@ -1,0 +1,10 @@
+[
+  {
+    "id": "brand-new-uuid-demo-999",
+    "customer": "CUST-101",
+    "subject": "Unable to log in",
+    "body": "The customer cannot log in after resetting their password.",
+    "created_at": "2026-10-23T12:00:00Z"
+  }
+]
+
