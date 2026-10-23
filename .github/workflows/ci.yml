@@ -22,7 +22,7 @@ jobs:
       # The integration test runs the tool as a subprocess, so the package
       # must be installed (not just on pytest's pythonpath).
       - name: Install package and test dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,pdf]"
 
       - name: Run tests
         run: pytest -v

@@ -1,6 +1,8 @@
 """Tests for the CLI's report wiring: --input, --top, and prioritizing before reporting."""
 
+import importlib.util
 import json
+import sys
 
 import pytest
 
@@ -160,6 +162,58 @@ class TestTopOption:
         assert "--top" in capsys.readouterr().err
 
 
+class TestFormatOption:
+    needs_reportlab = pytest.mark.skipif(
+        importlib.util.find_spec("reportlab") is None,
+        reason="the optional reportlab package is not installed",
+    )
+
+    def test_default_format_is_txt(self):
+        assert cli.build_parser().parse_args([]).format == "txt"
+
+    def test_unknown_format_is_rejected(self, capsys):
+        with pytest.raises(SystemExit) as exc:
+            cli.build_parser().parse_args(["--format", "docx"])
+
+        assert exc.value.code == 2
+        assert "--format" in capsys.readouterr().err
+
+    def test_txt_still_defaults_to_daily_summary_txt(self, workdir):
+        run_cli(workdir)
+
+        assert (workdir / "reports" / "daily_summary.txt").is_file()
+
+    @needs_reportlab
+    def test_pdf_defaults_to_daily_summary_pdf(self, workdir, capsys):
+        name = write_input(workdir, [make_record("t-1")])
+
+        code, _ = run_cli(workdir, "--input", name, "--format", "pdf")
+
+        pdf_path = workdir / "reports" / "daily_summary.pdf"
+        assert code == 0
+        assert pdf_path.read_bytes().startswith(b"%PDF")
+        assert not (workdir / "reports" / "daily_summary.txt").exists()
+        assert "daily_summary.pdf" in capsys.readouterr().out
+
+    @needs_reportlab
+    def test_pdf_respects_output_name(self, workdir):
+        run_cli(workdir, "--format", "pdf", "--output", "morning.pdf")
+
+        assert (workdir / "reports" / "morning.pdf").is_file()
+
+    def test_pdf_without_reportlab_exits_with_install_hint(
+        self, workdir, capsys, monkeypatch
+    ):
+        monkeypatch.setitem(sys.modules, "reportlab", None)
+
+        code, _ = run_cli(workdir, "--format", "pdf")
+
+        assert code == 2
+        assert "pip install" in capsys.readouterr().err
+        assert not (workdir / "t.db").exists()  # failed before touching the database
+        assert not (workdir / "reports").exists()
+
+
 class TestDatabaseOption:
     def test_huge_top_does_not_crash(self, workdir):
         name = write_input(workdir, [make_record("t-1")])
@@ -219,3 +273,108 @@ class TestReportOutput:
 
         assert code == 2
         assert "could not write the report" in capsys.readouterr().err
+
+
+class TestEmailOptions:
+    needs_reportlab = pytest.mark.skipif(
+        importlib.util.find_spec("reportlab") is None,
+        reason="the optional reportlab package is not installed",
+    )
+
+    def sent_messages(self, fake_smtp):
+        return [m for connection in fake_smtp.connections for m in connection.sent]
+
+    def test_no_email_flag_means_no_email(self, workdir, fake_smtp, mail_settings):
+        run_cli(workdir)
+
+        assert fake_smtp.connections == []
+
+    def test_email_sends_the_text_report_to_the_default_recipient(
+        self, workdir, fake_smtp, mail_settings, capsys
+    ):
+        name = write_input(workdir, [make_record("t-1", subject=OUTAGE_SUBJECT)])
+
+        code, _ = run_cli(workdir, "--input", name, "--email")
+
+        assert code == 0
+        (message,) = self.sent_messages(fake_smtp)
+        assert message["To"] == "manager@test.example"
+        assert "URGENT: production outage" in message.get_body().get_content()
+        assert next(message.iter_attachments()).get_filename() == "daily_summary.txt"
+        assert "Report emailed to manager@test.example" in capsys.readouterr().out
+
+    @needs_reportlab
+    def test_email_with_pdf_attaches_the_pdf(self, workdir, fake_smtp, mail_settings):
+        code, _ = run_cli(workdir, "--format", "pdf", "--email")
+
+        assert code == 0
+        (message,) = self.sent_messages(fake_smtp)
+        attachment = next(message.iter_attachments())
+        assert attachment.get_content_type() == "application/pdf"
+        assert attachment.get_filename() == "daily_summary.pdf"
+        assert attachment.get_content().startswith(b"%PDF")
+
+    def test_email_to_overrides_the_default_and_implies_sending(
+        self, workdir, fake_smtp, mail_settings
+    ):
+        code, _ = run_cli(
+            workdir, "--email-to", "x@test.example", "--email-to", "y@test.example"
+        )
+
+        assert code == 0
+        (message,) = self.sent_messages(fake_smtp)
+        assert message["To"] == "x@test.example, y@test.example"
+
+    def test_missing_mail_settings_stop_the_run_before_any_work(
+        self, workdir, fake_smtp, mail_settings, monkeypatch, capsys
+    ):
+        monkeypatch.delenv("SMTP_HOST")
+
+        code, _ = run_cli(workdir, "--email")
+
+        assert code == 2
+        assert "SMTP_HOST is not set" in capsys.readouterr().err
+        assert not (workdir / "t.db").exists()  # failed before touching the database
+        assert not (workdir / "reports").exists()
+        assert fake_smtp.connections == []
+
+    def test_no_recipient_stops_the_run_before_any_work(
+        self, workdir, fake_smtp, mail_settings, monkeypatch, capsys
+    ):
+        monkeypatch.delenv("REPORT_EMAIL_TO")
+
+        code, _ = run_cli(workdir, "--email")
+
+        assert code == 2
+        assert "no recipient" in capsys.readouterr().err
+        assert not (workdir / "t.db").exists()
+
+    def test_invalid_address_stops_the_run_before_any_work(
+        self, workdir, fake_smtp, mail_settings, capsys
+    ):
+        code, _ = run_cli(workdir, "--email-to", "not-an-address")
+
+        assert code == 2
+        assert "not a valid email address" in capsys.readouterr().err
+        assert not (workdir / "t.db").exists()
+
+    def test_failed_send_exits_with_error_but_keeps_the_report(
+        self, workdir, fake_smtp, mail_settings, capsys
+    ):
+        fake_smtp.connect_error = ConnectionRefusedError("refused")
+
+        code, text = run_cli(workdir, "--email")
+
+        captured = capsys.readouterr()
+        assert code == 2
+        assert "the report was saved but the email was not sent" in captured.err
+        assert "Report emailed" not in captured.out
+        assert "Daily Support Ticket Summary" in text  # the report file is still there
+
+    def test_the_password_is_never_printed(self, workdir, fake_smtp, mail_settings, capsys):
+        run_cli(workdir, "--email")
+        fake_smtp.connect_error = ConnectionRefusedError("refused")
+        run_cli(workdir, "--email")
+
+        captured = capsys.readouterr()
+        assert "app-password-123" not in captured.out + captured.err

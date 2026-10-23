@@ -7,7 +7,7 @@ The tool will:
 - Read support tickets from a CSV or JSON file.
 - Validate incoming ticket records and flag invalid data.
 - Assign priorities to valid tickets.
-- Generate a daily summary report for support managers.
+- Generate a daily summary report for support managers, as text or a PDF, and optionally email it.
 
 ## Ticket Schema
 |Field|Type|Description|Required|
@@ -40,6 +40,8 @@ cd support-ticket-triage-tool
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"         # installs the tool and pytest
+pip install -e ".[dev,pdf]"     # optional: also installs reportlab for --format pdf
+pip install -e ".[dev,pdf,email]"  # optional: also what is needed to email the report
 ```
 
 ## Running the Triage Tool
@@ -61,7 +63,10 @@ Give file names only, not paths. The input file is read from the `data/` folder 
 | Option | Description |
 |--------|-------------|
 | `--input FILE` | Tickets file inside `data/`. Optional: without it, the report is built from the tickets already in the database. |
-| `--output FILE` | Report file name inside `reports/` (default `daily_summary.txt`). |
+| `--output FILE` | Report file name inside `reports/` (default `daily_summary.txt`, or `daily_summary.pdf` with `--format pdf`). |
+| `--format txt\|pdf` | Report format (default `txt`). `pdf` needs the optional install described below. |
+| `--email` | Email the report to the default recipient (`REPORT_EMAIL_TO` in `.env`). See "Email the report" below. |
+| `--email-to ADDRESS` | Email the report to this address instead of the default (repeat for several). Implies `--email`. |
 | `--top N` | How many tickets to list under "Needs attention first" and "Waiting longest" (default `5`, `1` or more). The totals and counts always cover every ticket. |
 | `--db PATH` | SQLite database file (default `data/tickets.db`). |
 | `--init-db` | Create the database tables and exit. |
@@ -104,6 +109,84 @@ Waiting longest
 4. **Waiting longest**: the oldest tickets of any priority, so nothing is forgotten.
 
 Each ticket row shows the id, customer, subject, priority and how long the ticket has been waiting (for example `2d 3h`, `5h 12m`). Sections are never left blank.
+
+### PDF report (optional)
+
+The same report can be written as a PDF. This needs the optional `reportlab` package, which the rest of the tool does not use:
+
+```
+pip install -e ".[pdf]"
+ticket-triage --input sample_tickets.json --format pdf     # reports/daily_summary.pdf
+```
+
+Without the package, `--format pdf` stops with a message explaining how to install it. The PDF has the same sections and empty states as the text report, laid out as a designed one-page summary on US Letter: a title banner, four headline tiles (total tickets, rejected records, high priority, longest wait), two small charts (tickets by priority and by waiting time) and the three tables. Every page has a footer with the page number. Ticket ids are shortened to their first 8 characters in the tables, and characters outside Western European text are shown as `?`.
+
+### Email the report (optional)
+
+The report can be emailed to the support manager: the text report is the message body and the report file (the PDF with `--format pdf`) is attached. Sending uses Python's built-in mail support. The examples use a Gmail account; any mail provider that offers SMTP works the same way.
+
+**1. Install the email extra**
+
+```
+pip install -e ".[email]"
+```
+
+It adds `python-dotenv` (reads the settings from `.env`) and `truststore` (checks the mail server's certificate against your computer's certificates; see Troubleshooting).
+
+**2. Set up the Gmail account (once)**
+
+Gmail does not accept your normal password from other programs. You need an *app password*: a 16-character password that only this tool uses.
+
+1. Turn on 2-Step Verification: open your [Google Account](https://myaccount.google.com), go to Security, then "2-Step Verification", and turn it on. App passwords are only available with it on.
+2. Create the app password at [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords): enter a name such as `ticket-triage` and click Create. Copy the 16 characters Google shows (it will not show them again). You can delete the app password on the same page at any time.
+3. If you do not see the app passwords page, you are probably on a work or school account whose administrator turned it off, or on an account with Advanced Protection or security-key-only 2-Step Verification. A personal `@gmail.com` account normally works.
+
+See Google's help page, [Sign in with app passwords](https://support.google.com/accounts/answer/185833), for details.
+
+**3. Add the settings to `.env`**
+
+Copy `.env.example` to `.env` if you do not have one, and add these lines (one per line, no quotes, no spaces around `=`). `.env` is in `.gitignore`: never commit it or paste the password anywhere.
+
+```
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=youraddress@gmail.com
+SMTP_PASSWORD=<the 16 characters, without spaces>
+SMTP_FROM=youraddress@gmail.com
+REPORT_EMAIL_TO=manager@example.com
+```
+
+| Setting | Meaning |
+|---|---|
+| `SMTP_HOST`, `SMTP_PORT` | The mail server. Port 587 upgrades to TLS before logging in; port 465 uses SSL from the start. |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | Your full Gmail address and the app password. Both can be left out for a local test server. |
+| `SMTP_FROM` | The sender address. Defaults to `SMTP_USERNAME` when that is an address. |
+| `REPORT_EMAIL_TO` | The default recipient. Several addresses can be separated by commas. To send to yourself, use your own address. |
+
+**4. Send the report**
+
+```
+ticket-triage --input sample_tickets.json --format pdf --email                       # to REPORT_EMAIL_TO
+ticket-triage --input sample_tickets.json --format pdf --email-to boss@example.com    # to another address
+```
+
+The tool prints `Report emailed to <address>`. The message arrives with the subject "Daily Support Ticket Summary - <date>", and also appears in the sender's Sent folder.
+
+**What happens when something is wrong**
+
+Missing or invalid settings and addresses stop the run before any work is done, with a message saying what to fix. If the email cannot be sent, the report is still saved, the problem is printed, and the exit code is 2. The password is never printed, and it is never sent over a connection that cannot be encrypted.
+
+**Troubleshooting**
+
+| Message | Cause and fix |
+|---|---|
+| `SMTP_HOST is not set` | The settings are not being read. Run the command from the project folder and check that `.env` has the lines above (and that the `email` extra is installed). |
+| `the server rejected the login` | The password is not an app password, was copied with a typo or spaces, or was revoked (Google revokes app passwords when you change your account password). Create a new one. Check that `SMTP_USERNAME` is your full address. |
+| `CERTIFICATE_VERIFY_FAILED` | Python cannot verify the server's certificate. Run `pip install -e ".[email]"` (adds `truststore`). The other fix on a Mac with Python from python.org is to run "Install Certificates.command" from the Python folder in Applications. A company network that inspects HTTPS also needs `truststore`. |
+| `no recipient` | Set `REPORT_EMAIL_TO` in `.env`, or pass `--email-to ADDRESS`. |
+| Nothing in the Inbox | Check Spam, and check the sender's Sent folder to confirm Gmail accepted it. |
+
+The report contains ticket subjects and customer names, so only send it to addresses that should see them. To try it without sending real mail, run a local test inbox such as [Mailpit](https://mailpit.axllent.org) and set `SMTP_HOST=localhost`, `SMTP_PORT=1025` and `SMTP_FROM=triage@example.com`.
 
 ### Demo data
 

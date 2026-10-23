@@ -2,7 +2,8 @@
 Command-line entry point for the Support Ticket Triage Tool.
 The tool runs three stages in order: load tickets into SQLite (when --input is
 given), re-score every open ticket against the current time (so tickets grow more
-urgent the longer they wait), and write the daily report from the database.
+urgent the longer they wait), and write the daily report from the database, as text
+or (optionally) PDF, and can email it.
 `--resolve TICKET_ID` closes a ticket so later runs stop re-scoring it.
 """
 
@@ -13,8 +14,13 @@ import sys
 from pathlib import Path
 
 from ticket_triage.db import DEFAULT_DB_PATH, init_db, seed_db
+from ticket_triage.emailer import (
+    EmailError,
+    load_email_settings,
+    resolve_recipients,
+    send_report_email,
+)
 from ticket_triage.intake import ingest_tickets_file
-from ticket_triage.models import Ticket
 from ticket_triage.priority.base import utc_now
 from ticket_triage.priority.config import (
     DEFAULT_RULES_FILE,
@@ -26,9 +32,12 @@ from ticket_triage.priority.repository import ResolveOutcome, prioritize_open, r
 from ticket_triage.readers import FileReadError
 from ticket_triage.report import (
     DEFAULT_TOP_N,
+    PdfUnavailableError,
     build_report_data,
     render_report,
+    require_pdf_support,
     write_report,
+    write_report_pdf,
 )
 
 
@@ -49,6 +58,7 @@ def load_rules() -> PriorityConfig:
 
 # --- CLI ---------------------------------------------------------------------
 
+REPORT_FORMATS = ("txt", "pdf")
 DATA_DIR = Path("data")
 REPORTS_DIR = Path("reports")
 
@@ -109,9 +119,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output",
-        default="daily_summary.txt",
         type=file_name,
-        help=f"Name of the report file, saved inside {REPORTS_DIR}/.",
+        help=(
+            f"Name of the report file, saved inside {REPORTS_DIR}/ "
+            "(default: daily_summary.txt, or daily_summary.pdf with --format pdf)."
+        ),
+    )
+    parser.add_argument(
+        "--format",
+        choices=REPORT_FORMATS,
+        default="txt",
+        help='Report format: "txt" (default) or "pdf" (needs: pip install -e ".[pdf]").',
+    )
+    parser.add_argument(
+        "--email",
+        action="store_true",
+        help=(
+            "Email the report to the default recipient (REPORT_EMAIL_TO in .env). "
+            "Mail server settings are in .env too; see .env.example."
+        ),
+    )
+    parser.add_argument(
+        "--email-to",
+        action="append",
+        metavar="ADDRESS",
+        help="Email the report to this address instead of the default (repeat for several).",
     )
     parser.add_argument(
         "--top",
@@ -165,7 +197,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.resolve:
         return run_resolve(args.db, args.resolve)
 
-    output_path = REPORTS_DIR / args.output
+    # Fail before touching the database if PDF output cannot work.
+    if args.format == "pdf":
+        try:
+            require_pdf_support()
+        except PdfUnavailableError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    # Check the mail settings and recipients before doing any work, so a missing
+    # setting does not leave a half-finished run.
+    recipients = None
+    if args.email or args.email_to:
+        try:
+            email_settings = load_email_settings()
+            recipients = resolve_recipients(args.email_to, email_settings)
+        except EmailError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    output_path = REPORTS_DIR / (args.output or f"daily_summary.{args.format}")
 
     input_path = DATA_DIR / args.input if args.input else None
     if input_path is not None and not input_path.is_file():
@@ -213,7 +264,10 @@ def main(argv: list[str] | None = None) -> int:
         conn.close()
 
     try:
-        write_report(render_report(data), output_path)
+        if args.format == "pdf":
+            write_report_pdf(data, output_path)
+        else:
+            write_report(render_report(data), output_path)
     except OSError as exc:
         print(f"error: could not write the report to {output_path}: {exc}", file=sys.stderr)
         return 2
@@ -227,6 +281,17 @@ def main(argv: list[str] | None = None) -> int:
         f"{loaded}{sum(data.counts_by_priority.values())} prioritized ticket(s). "
         f"Report saved to {output_path}"
     )
+
+    if recipients:
+        try:
+            send_report_email(data, output_path, email_settings, recipients)
+        except EmailError as exc:
+            print(
+                f"error: the report was saved but the email was not sent: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"Report emailed to {', '.join(recipients)}")
     return 0
 
 

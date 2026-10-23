@@ -136,6 +136,29 @@ def test_day_with_no_high_tickets(conn, add_ticket):
     assert [r.ticket.id for r in data.longest_waiting] == ["a", "b"]
 
 
+def test_waiting_buckets_cover_every_ticket_even_beyond_top_n(conn, add_ticket):
+    add_ticket("new", "2026-10-19T08:00:00Z", "LOW")  # 4h
+    add_ticket("mid", "2026-10-17T09:00:00Z", "LOW")  # 2d 3h
+    add_ticket("old", "2026-10-01T09:00:00Z", "LOW")  # 18d 3h
+
+    data = build_report_data(conn, NOW, top_n=1)
+
+    assert data.waiting_buckets == {
+        "Under 1 day": 1, "1-3 days": 1, "3-7 days": 0, "7+ days": 1,
+    }
+
+
+def test_waiting_buckets_leave_out_resolved_tickets(conn, add_ticket):
+    add_ticket("open", "2026-10-17T09:00:00Z", "LOW")
+    add_ticket("closed", "2026-10-17T09:00:00Z", "LOW")
+    conn.execute("UPDATE tickets SET resolved_at = '2026-10-18T09:00:00Z' WHERE id = 'closed'")
+    conn.commit()
+
+    data = build_report_data(conn, NOW)
+
+    assert sum(data.waiting_buckets.values()) == data.total_tickets == 1
+
+
 def test_huge_top_n_returns_everything_instead_of_overflowing(conn, add_ticket):
     add_ticket("a", "2026-10-19T08:00:00Z", "HIGH")
 

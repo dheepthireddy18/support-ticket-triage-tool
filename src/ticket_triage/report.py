@@ -9,6 +9,8 @@ values share one format. Ties are broken by id so results are deterministic.
 
 build_report_data() combines the queries into one ReportData. render_report()
 turns that into manager-first plain text and write_report() saves it.
+write_report_pdf() writes the same report as a PDF; it needs the optional
+"reportlab" package and everything else works without it.
 """
 
 from __future__ import annotations
@@ -33,6 +35,23 @@ REPORT_TITLE = "Daily Support Ticket Summary"
 NO_URGENT_MESSAGE = "No urgent tickets today"
 NO_TICKETS_MESSAGE = "No tickets to show"
 UNCLASSIFIED_LABEL = "Unclassified"
+NEEDS_ATTENTION_TITLE = "Needs attention first"
+COUNTS_TITLE = "Counts by priority"
+WAITING_LONGEST_TITLE = "Waiting longest"
+
+PDF_INSTALL_HINT = (
+    'PDF output needs the optional "reportlab" package. '
+    'Install it with: pip install -e ".[pdf]"'
+)
+
+# Waiting-time buckets for the PDF chart, as (label, lower bound in days). The SQL in
+# count_by_age() uses the same bounds.
+AGE_BUCKETS = (
+    ("Under 1 day", 0),
+    ("1-3 days", 1),
+    ("3-7 days", 3),
+    ("7+ days", 7),
+)
 
 
 @dataclass(frozen=True)
@@ -54,6 +73,11 @@ class ReportData:
     top_urgent: list[ReportTicket] = field(default_factory=list)
     longest_waiting: list[ReportTicket] = field(default_factory=list)
     rejected_count: int = 0
+    waiting_buckets: dict[str, int] = field(default_factory=dict)  # Used by the PDF chart
+
+
+class PdfUnavailableError(RuntimeError):
+    """PDF output was requested but the optional reportlab package is missing."""
 
 
 # --- Database queries ---------------------------------------------------------
@@ -124,6 +148,34 @@ def count_rejected(conn: sqlite3.Connection) -> int:
     return row["n"]
 
 
+def count_by_age(conn: sqlite3.Connection, now: datetime) -> dict[str, int]:
+    """
+    Count open (unresolved) tickets per waiting-time bucket (see AGE_BUCKETS), measured at `now`.
+
+    Always returns every bucket, using 0 for an empty one. A ticket created after
+    `now` counts as "Under 1 day"; one with an unreadable created_at is not counted.
+    """
+    counts = {label: 0 for label, _ in AGE_BUCKETS}
+    rows = conn.execute(
+        """
+        SELECT CASE WHEN age < 1 THEN 0 WHEN age < 3 THEN 1 WHEN age < 7 THEN 2 ELSE 3 END
+                   AS bucket,
+               COUNT(*) AS n
+        FROM (
+            SELECT julianday(?) - julianday(created_at) AS age
+            FROM tickets
+            WHERE julianday(created_at) IS NOT NULL AND resolved_at IS NULL
+        )
+        GROUP BY bucket
+        """,
+        (now.isoformat(),),
+    )
+    labels = [label for label, _ in AGE_BUCKETS]
+    for row in rows:
+        counts[labels[row["bucket"]]] = row["n"]
+    return counts
+
+
 # --- Report assembly ----------------------------------------------------------
 
 
@@ -164,6 +216,7 @@ def build_report_data(
         top_urgent=_with_waiting(fetch_top_urgent(conn, top_n), now),
         longest_waiting=_with_waiting(fetch_longest_waiting(conn, top_n), now),
         rejected_count=count_rejected(conn),
+        waiting_buckets=count_by_age(conn, now),
     )
 
 
@@ -226,16 +279,16 @@ def render_report(data: ReportData) -> str:
         "",
     ]
     lines += _ticket_section(
-        "Needs attention first", data.top_urgent, NO_URGENT_MESSAGE
+        NEEDS_ATTENTION_TITLE, data.top_urgent, NO_URGENT_MESSAGE
     )
-    lines += ["", "Counts by priority", "------------------"]
+    lines += ["", COUNTS_TITLE, "-" * len(COUNTS_TITLE)]
     for level in PRIORITY_LEVELS:
         lines.append(f"  {level}: {data.counts_by_priority[level]}")
     if data.unclassified_count > 0:
         lines.append(f"  {UNCLASSIFIED_LABEL}: {data.unclassified_count}")
     lines.append("")
     lines += _ticket_section(
-        "Waiting longest", data.longest_waiting, NO_TICKETS_MESSAGE
+        WAITING_LONGEST_TITLE, data.longest_waiting, NO_TICKETS_MESSAGE
     )
     return "\n".join(lines) + "\n"
 
@@ -245,4 +298,33 @@ def write_report(text: str, path: Path | str) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+    return path
+
+
+# --- PDF output (optional) ----------------------------------------------------
+
+
+def require_pdf_support() -> None:
+    """Raise PdfUnavailableError, with install instructions, if reportlab is missing."""
+    try:
+        import reportlab  # noqa: F401
+    except ImportError as exc:
+        raise PdfUnavailableError(PDF_INSTALL_HINT) from exc
+
+
+def write_report_pdf(data: ReportData, path: Path | str) -> Path:
+    """
+    Write the report to `path` as a designed PDF (see ticket_triage.report_pdf).
+
+    Characters the PDF fonts cannot show (outside Western European text) are
+    replaced with "?". Returns the path.
+
+    :raises PdfUnavailableError: if reportlab is not installed.
+    """
+    require_pdf_support()
+    from ticket_triage.report_pdf import build_pdf  # Imports reportlab, so only when needed
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    build_pdf(data, path)
     return path
